@@ -21,13 +21,11 @@
 - **Your clips** from internal storage or a USB drive
 - **Looks**: Dim, Vignette, Haze, all combinable
 - **Hide in Settings**: Settings keeps the normal PS5 background
-- **Smooth fades** when opening Settings, starting or closing a game
 - **Pause while a game runs**, so games get the video decoder
-- **Parallax** when moving between games (optional)
-- **Random video** on every start (optional)
+- **Parallax** when moving between games
+- **Random video** on every start
 - **Home-screen app** to pick, delete and control everything
 - **Phone / PC page** to upload, play and delete videos
-- **Runs next to OnionHEN**
 
 ## Install
 
