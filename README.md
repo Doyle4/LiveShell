@@ -68,7 +68,8 @@ ONIONHEN=~/onionHEN-beta2 PS5_PAYLOAD_SDK=~/ps5-payload-sdk tools/build.sh
 
 ## Credits
 
-- **OnionHEN**: payload injector, detour library and ShellUI groundwork
+- **[OnionHEN](https://github.com/aydencharles/onionHEN/)**: payload injector, detour library and ShellUI groundwork
+- **[PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk)**: toolchain and PS5 libraries
 
 ## License
 
