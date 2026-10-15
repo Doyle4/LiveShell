@@ -31,7 +31,7 @@
 
 ## Install
 
-Needs a jailbroken PS5 with kstuff and a payload loader.
+Needs a jailbroken PS5 with a payload loader.
 
 1. Copy `.mp4` files to `/data/LiveShell/video`, or to a `liveshell` folder on a USB drive.
 2. Load `liveshell.elf`.
