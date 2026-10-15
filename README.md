@@ -1,0 +1,75 @@
+<p align="center">
+  <img src="assets/icon0.png" width="140" alt="LiveShell Engine">
+</p>
+
+<h1 align="center">LiveShell Engine</h1>
+
+<p align="center"><b>Animated video wallpapers for the PS5 home screen.</b></p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.0-white?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/platform-PS5-white?style=flat-square" alt="platform">
+  <img src="https://img.shields.io/badge/video-H.264%20%7C%20HEVC%20%E2%89%A41080p-white?style=flat-square" alt="video">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-white?style=flat-square" alt="license">
+</p>
+
+---
+
+## Features
+
+- **Video wallpaper** behind the home screen, seamless loop
+- **Your clips** from internal storage or a USB drive
+- **Looks**: Dim, Vignette, Haze, all combinable
+- **Hide in Settings**: Settings keeps the normal PS5 background
+- **Smooth fades** when opening Settings, starting or closing a game
+- **Pause while a game runs**, so games get the video decoder
+- **Parallax** when moving between games (optional)
+- **Random video** on every start (optional)
+- **Home-screen app** to pick, delete and control everything
+- **Phone / PC page** to upload, play and delete videos
+- **Runs next to OnionHEN**
+
+## Install
+
+Needs a jailbroken PS5 with kstuff and a payload loader.
+
+1. Copy `.mp4` files to `/data/LiveShell/video`, or to a `liveshell` folder on a USB drive.
+2. Load `liveshell.elf`.
+3. Open the **LiveShell Engine** tile on the home screen.
+
+Videos: H.264 or HEVC, up to 1080p.
+
+## Controls
+
+| Button | Action |
+|---|---|
+| ✕ | Set as wallpaper / select |
+| L1 / R1 | All, Internal, USB, Settings |
+| ○ | Close the app |
+
+## Folders on the PS5
+
+| Path | What |
+|---|---|
+| `/data/LiveShell/video/` | Your videos |
+| `<USB>/liveshell/` | Videos on a USB drive |
+| `/data/LiveShell/config.txt` | Settings |
+| `/data/LiveShell/liveshell.log` | Log |
+
+## Building
+
+Linux or WSL, with the [PS5 payload SDK](https://github.com/ps5-payload-dev/sdk) and the [OnionHEN](https://github.com/aydencharles/onionHEN) v0.9.0-beta2 source tree.
+
+```sh
+ONIONHEN=~/onionHEN-beta2 PS5_PAYLOAD_SDK=~/ps5-payload-sdk tools/build.sh
+```
+
+`src/` is copied into OnionHEN as `source/liveshell` and built as the `liveshell` target.
+
+## Credits
+
+- **OnionHEN**: payload injector, detour library and ShellUI groundwork
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).
