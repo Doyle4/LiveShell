@@ -35,7 +35,7 @@ Needs a jailbroken PS5 with a payload loader.
 
 1. Copy `.mp4` files to `/data/LiveShell/video`, or to a `liveshell` folder on a USB drive.
 2. Load `liveshell.elf`.
-3. Open the **LiveShell Engine** tile on the home screen.
+3. Open the **LiveShell Engine** on the home screen (Media).
 
 Videos: H.264 or HEVC, up to 1080p.
 
