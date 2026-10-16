@@ -48,14 +48,6 @@ Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported ye
 
 Keep all videos in one place (internal **or** USB) for the quickest switching.
 
-## Controls
-
-| Button | Action |
-|---|---|
-| ✕ | Set as wallpaper / select |
-| L1 / R1 | All, Internal, USB, Settings |
-| ○ | Close the app |
-
 ## Folders on the PS5
 
 | Path | What |
