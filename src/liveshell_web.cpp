@@ -10,9 +10,11 @@
  *   GET /api/select?i=N play clip N (index into videos)
  *   GET /api/on|off     wallpaper on / off
  *   GET /api/dim?v=N    darken the video by N % (0..80) so the home screen stays readable
+ *   GET /api/volume?v=N sound of clips that have it, N % (0..100)
  */
 #include "liveshell.hpp"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdint>
@@ -69,6 +71,8 @@ std::string json_str(const std::string& s) {
 		if (c == '"' || c == '\\') {
 			out += '\\';
 			out += c;
+		} else if (c == '\n') {
+			out += "\\n"; // games.txt lines: dropped before, so the picker never marked the chosen clip
 		} else if (static_cast<unsigned char>(c) >= 0x20) {
 			out += c;
 		}
@@ -78,16 +82,19 @@ std::string json_str(const std::string& s) {
 
 std::string state_json() {
 	const State st = get_state();
-	std::string j  = std::string("{\"enabled\":") + (st.enabled ? "true" : "false") + ",\"dim\":" + std::to_string(st.dim) +
-	                ",\"blur\":" + std::to_string(st.blur) + ",\"looks\":[" + std::to_string(st.looks[0]) + "," + std::to_string(st.looks[1]) + "," + std::to_string(st.looks[2]) + "," + std::to_string(st.looks[3]) + "]" + ",\"shuffle\":" + (st.shuffle ? "true" : "false") + ",\"gamepause\":" + (st.game_pause ? "true" : "false") + ",\"menuhide\":" + (st.menu_hide ? "true" : "false") + ",\"parallax\":" + (st.parallax ? "true" : "false") +
-	                ",\"ip\":" + json_str(st.ip) + ",\"port\":" + std::to_string(kWebPort) + ",\"game\":" + json_str(st.game) + ",\"status\":" + json_str(st.status) + ",\"current\":" + json_str(st.current) + ",\"videos\":[";
+	std::string j  = std::string("{\"enabled\":") + (st.enabled ? "true" : "false") + ",\"dim\":" + std::to_string(st.dim) + ",\"volume\":" + std::to_string(st.volume) +
+	                ",\"blur\":" + std::to_string(st.blur) + ",\"looks\":[" + std::to_string(st.looks[0]) + "," + std::to_string(st.looks[1]) + "," + std::to_string(st.looks[2]) + "," + std::to_string(st.looks[3]) + "]" + ",\"shuffle\":" + (st.shuffle ? "true" : "false") + ",\"mainvideo\":" + (st.main_video ? "true" : "false") + ",\"gamevideos\":" + (st.game_videos ? "true" : "false") + ",\"gamepause\":" + (st.game_pause ? "true" : "false") + ",\"menuhide\":" + (st.menu_hide ? "true" : "false") + ",\"parallax\":" + (st.parallax ? "true" : "false") +
+	                ",\"ip\":" + json_str(st.ip) + ",\"port\":" + std::to_string(kWebPort) + ",\"games\":" + json_str(games_text()) + ",\"game\":" + json_str(st.game) + ",\"status\":" + json_str(st.status) + ",\"current\":" + json_str(st.current) + ",\"videos\":[";
 	for (size_t i = 0; i < st.videos.size(); ++i) {
 		const Video& v = st.videos[i];
 		j += (i ? ",{" : "{");
 		struct stat fs {};
 		const long long size = stat(v.path.c_str(), &fs) == 0 ? static_cast<long long>(fs.st_size) : 0;
+		struct stat ts {};
+		const std::string cover = v.path.substr(0, v.path.rfind('.')) + ".png";
+		const bool        thumb = stat(cover.c_str(), &ts) == 0 && ts.st_size >= kMinThumb;
 		j += "\"name\":" + json_str(v.name) + ",\"where\":" + json_str(v.where) + ",\"path\":" + json_str(v.path) +
-		     ",\"size\":" + std::to_string(size) + "}";
+		     ",\"size\":" + std::to_string(size) + ",\"thumb\":" + (thumb ? "true" : "false") + "}";
 	}
 	return j + "]}";
 }
@@ -426,12 +433,56 @@ void handle(int fd) {
 		const size_t pos = query.find("v=");
 		set_dim(pos == std::string::npos ? 25 : atoi(query.c_str() + pos + 2));
 		reply_json(fd, result_json(true, error));
+	} else if (path == "/api/volume") {
+		const size_t pos = query.find("v=");
+		set_volume(pos == std::string::npos ? 100 : atoi(query.c_str() + pos + 2));
+		reply_json(fd, result_json(true, error));
 	} else if (path == "/api/look") {
 		// /api/look?k=bottom&v=2
 		const size_t k = query.find("k="), v = query.find("v=");
 		const std::string key = k == std::string::npos ? "" : query.substr(k + 2, query.find('&', k) - (k + 2));
 		set_look(key, v == std::string::npos ? 0 : atoi(query.c_str() + v + 2));
 		reply_json(fd, result_json(true, error));
+	} else if (path == "/api/games") {
+		std::string j = "[";
+		for (const Game& g : list_games()) {
+			j += (j.size() > 1 ? "," : "");
+			j += "{\"tid\":" + json_str(g.tid) + ",\"name\":" + json_str(g.name) + ",\"clip\":" + json_str(saved_game_clip(g.tid)) + "}";
+		}
+		reply_json(fd, j + "]");
+	} else if (path == "/gameicon") {
+		const size_t      t   = query.find("tid=");
+		const std::string tid = t == std::string::npos ? "" : query.substr(t + 4, 9);
+		const std::string png = "/user/appmeta/" + tid + "/icon0.png";
+		struct stat       st {};
+		std::string       data;
+		if (is_title_id(tid.c_str()) && stat(png.c_str(), &st) == 0 && st.st_size > 0 && st.st_size < 4 * 1024 * 1024) {
+			data.resize(static_cast<size_t>(st.st_size));
+			const int f = open(png.c_str(), O_RDONLY);
+			if (f >= 0) {
+				if (read(f, &data[0], data.size()) != static_cast<ssize_t>(data.size())) {
+					data.clear();
+				}
+				close(f);
+			}
+		}
+		if (data.empty()) {
+			reply_404(fd);
+		} else {
+			reply(fd, "200 OK", "image/png", data.data(), data.size());
+		}
+	} else if (path == "/api/gamebg") {
+		// /api/gamebg?tid=PPSA01234&i=N  (i=-1: main wallpaper)
+		const size_t t = query.find("tid="), k = query.find("i=");
+		std::string tid = t == std::string::npos ? "" : query.substr(t + 4, query.find('&', t) - (t + 4));
+		tid.erase(std::remove_if(tid.begin(), tid.end(), [](char c) { return !isalnum(static_cast<unsigned char>(c)); }), tid.end());
+		Video v;
+		const int i = k == std::string::npos ? -1 : atoi(query.c_str() + k + 2);
+		const bool ok = !tid.empty() && (i < 0 || video_at(i, v));
+		if (ok) {
+			set_game_background(tid, i < 0 ? std::string() : v.path);
+		}
+		reply_json(fd, result_json(ok, "Unknown game or video"));
 	} else if (path == "/api/blur") {
 		const size_t pos = query.find("v=");
 		set_blur(pos == std::string::npos ? 0 : atoi(query.c_str() + pos + 2));
@@ -469,11 +520,11 @@ void* connection_thread(void* arg) {
 	return nullptr;
 }
 
-void* server_thread(void*) {
+int open_web_port() {
 	const int s = socket(AF_INET, SOCK_STREAM, 0);
 	if (s < 0) {
 		log("web: socket failed (errno %d)", errno);
-		return nullptr;
+		return -1;
 	}
 	int on = 1;
 	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -484,15 +535,47 @@ void* server_thread(void*) {
 	if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(s, 8) != 0) {
 		log("web: port %d unavailable (errno %d)", kWebPort, errno);
 		close(s);
-		return nullptr;
+		return -1;
 	}
+	timeval tv {1, 0}; // accept wakes up every second: rest mode / reopen checks
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	log("web: window on port %d", kWebPort);
+	return s;
+}
+
+void* server_thread(void*) {
+	// Rest mode kills listening sockets (user report: the window was dead after waking the PS5):
+	// when accept keeps failing, open the port again.
+	int s = -1, fails = 0, epoch = net_epoch();
 	for (;;) {
+		if (s >= 0 && epoch != net_epoch()) {
+			log("web: reopening the window port after rest mode");
+			close(s);
+			s = -1;
+		}
+		if (s < 0) {
+			epoch = net_epoch();
+			s     = open_web_port();
+			if (s < 0) {
+				sleep(2);
+				continue;
+			}
+			fails = 0;
+		}
 		const int c = accept(s, nullptr, nullptr);
 		if (c < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				continue; // the 1 s timeout
+			}
+			if (++fails >= 30) { // ~3 s of errors
+				log("web: port broken (errno %d), reopening", errno);
+				close(s);
+				s = -1;
+			}
 			usleep(100 * 1000);
 			continue;
 		}
+		fails = 0;
 		timeval tv {10, 0};
 		setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 		setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));

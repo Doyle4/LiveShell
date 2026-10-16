@@ -16,15 +16,20 @@
  * Log: /system_tmp/liveshell/shellui.log.
  */
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cctype>
 #include <cstring>
+#include <string>
 #include <fcntl.h>
 #include <initializer_list>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -51,12 +56,21 @@ constexpr const char* kLogFile    = "/system_tmp/liveshell/shellui.log";
 constexpr const char* kGuardFile  = "/system_tmp/liveshell/video_trying";
 constexpr const char* kStatusFile = "/system_tmp/liveshell/status.txt";
 constexpr const char* kDimFile    = "/system_tmp/liveshell/dim.txt";
-constexpr off_t       kLogMaxSize = 256 * 1024;
+constexpr const char* kVolumeFile = "/system_tmp/liveshell/volume.txt";
+constexpr off_t       kLogMaxSize = 12 * 1024; // ShellUI's files stop growing at ~16 KB (test v11-9)
 
 // ---- logging ---------------------------------------------------------------------------------
 int  g_log   = -1;
 long g_t0_ms = 0;
 int  g_tick  = 0; // UI frames since injection
+std::atomic<int> g_vol_req{100}; // % sound of clips that have it (volume.txt)
+int              g_vol_applied = -1;
+bool             g_clip_silent = false; // the playing clip has no sound track
+volatile bool    g_stalled     = false; // the video stopped moving (e.g. after rest mode): restart it
+float            g_aud_now     = 0.0f;  // the playing clip's volume right now (fades toward the setting)
+int              g_aud_set     = -1;    // last value sent to SetVolume
+bool             g_aud_muted   = false; // SetIsMuted state of the playing clip
+volatile bool    g_focus_new   = false; // a tile was just highlighted: decide about the PS5 music now
 
 long now_ms() {
 	timespec ts {};
@@ -64,8 +78,50 @@ long now_ms() {
 	return static_cast<long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
+// ShellUI may only write ~16 KB of files per run (status.txt vanished and the log froze mid-session,
+// test v11-8), so status, focus and log lines go to the payload over a local UDP socket instead:
+// "S<status>", "F<title id>", "L<log line>". Files are only the fallback.
+int         g_ui_sock = -1;
+sockaddr_in g_ui_addr {};
+
+void ui_channel_open() {
+	g_ui_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (g_ui_sock >= 0) {
+		g_ui_addr.sin_family      = AF_INET;
+		g_ui_addr.sin_port        = htons(9051);
+		g_ui_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	}
+}
+
+bool to_payload(char kind, const char* text, size_t len) {
+	if (g_ui_sock < 0) {
+		return false;
+	}
+	char buf[1500];
+	if (len > sizeof(buf) - 1) {
+		len = sizeof(buf) - 1;
+	}
+	buf[0] = kind;
+	memcpy(buf + 1, text, len);
+	if (sendto(g_ui_sock, buf, len + 1, 0, reinterpret_cast<sockaddr*>(&g_ui_addr), sizeof(g_ui_addr)) ==
+	    static_cast<ssize_t>(len + 1)) {
+		return true;
+	}
+	// Broken (rest mode): a new socket, at most once a second, then try again.
+	static long last_reopen = 0;
+	if (now_ms() - last_reopen < 1000) {
+		return false;
+	}
+	last_reopen = now_ms();
+	close(g_ui_sock);
+	ui_channel_open();
+	return g_ui_sock >= 0 &&
+	       sendto(g_ui_sock, buf, len + 1, 0, reinterpret_cast<sockaddr*>(&g_ui_addr), sizeof(g_ui_addr)) ==
+	           static_cast<ssize_t>(len + 1);
+}
+
 void wp_log(const char* fmt, ...) {
-	if (g_log < 0) {
+	if (g_log < 0 && g_ui_sock < 0) {
 		return;
 	}
 	char line[1400];
@@ -82,6 +138,9 @@ void wp_log(const char* fmt, ...) {
 		n = static_cast<int>(sizeof(line)) - 2;
 	}
 	line[n++] = '\n';
+	if (to_payload('L', line, static_cast<size_t>(n)) || g_log < 0) {
+		return;
+	}
 	struct stat st {};
 	if (fstat(g_log, &st) == 0 && st.st_size > kLogMaxSize) {
 		(void)ftruncate(g_log, 0);
@@ -91,6 +150,8 @@ void wp_log(const char* fmt, ...) {
 }
 
 // What the daemon sees: playing <path> / starting / stopping / stopped / failed <rc>.
+char g_last_status[600] = {};
+
 void write_status(const char* fmt, ...) {
 	char    text[600];
 	va_list args;
@@ -101,13 +162,16 @@ void write_status(const char* fmt, ...) {
 		return;
 	}
 	const size_t len = strlen(text);
-	text[len]        = '\n';
-	const int fd     = open(kStatusFile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-	if (fd >= 0) {
-		(void)write(fd, text, len + 1);
-		close(fd);
+	snprintf(g_last_status, sizeof(g_last_status), "%s", text);
+	if (!to_payload('S', text, len)) {
+		text[len]    = '\n';
+		const int fd = open(kStatusFile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		if (fd >= 0) {
+			(void)write(fd, text, len + 1);
+			close(fd);
+		}
+		text[len] = 0;
 	}
-	text[len] = 0;
 	wp_log("status: %s", text);
 }
 
@@ -164,6 +228,7 @@ Obj         (*mono_signature_get_return_type)(Obj sig);
 char*       (*mono_type_get_name)(Obj type);
 Obj         (*mono_class_from_mono_type)(Obj type);
 int         (*mono_class_is_enum)(Obj klass);
+int         (*mono_class_is_valuetype)(Obj klass);
 Obj         (*mono_class_vtable)(Obj domain, Obj klass);
 void        (*mono_field_static_get_value)(Obj vtable, Obj field, void* value);
 Obj         (*mono_signature_get_params)(Obj sig, void** iter);
@@ -256,6 +321,7 @@ bool resolve_mono() {
 		resolve(lib, mono_type_get_name, "mono_type_get_name");
 		resolve(lib, mono_class_from_mono_type, "mono_class_from_mono_type");
 		resolve(lib, mono_class_is_enum, "mono_class_is_enum");
+		resolve(lib, mono_class_is_valuetype, "mono_class_is_valuetype");
 		resolve(lib, mono_class_vtable, "mono_class_vtable");
 		resolve(lib, mono_field_static_get_value, "mono_field_static_get_value");
 		resolve(lib, mono_signature_get_params, "mono_signature_get_params");
@@ -322,6 +388,72 @@ bool property_set(Obj klass, Obj obj, const char* name, void* value) {
 	mono_runtime_invoke(set, obj, args, &exc);
 	log_exception(name, exc);
 	return exc == nullptr;
+}
+
+// ---- video sound (test v11-12) ----------------------------------------------------------------
+// The clip's sound plays, and Sony's home music goes quiet by itself while our player runs (the
+// player suppresses the system BGM). It was quiet though: read the player's volume and raise it.
+const char* type_name_of(Obj type) {
+	const char* n = type != nullptr && mono_type_get_name != nullptr ? mono_type_get_name(type) : nullptr;
+	return n != nullptr ? n : "?";
+}
+
+const char* param0_type(Obj method) {
+	if (method == nullptr || mono_method_signature == nullptr || mono_signature_get_params == nullptr) {
+		return "?";
+	}
+	void* iter = nullptr;
+	return type_name_of(mono_signature_get_params(mono_method_signature(method), &iter));
+}
+
+// Sound setting on the playing clip's player. VideoPlayer.SetVolume takes an int 0..100 (100 by
+// default, test v11-12); Mute also sets SetIsMuted so nothing at all comes through.
+// Our player silences the PS5's background music while it plays (a game's own theme, e.g. ASTRO's
+// PLAYROOM, played ~0.5 s and stopped, test v11-14). Muted: let that music play on.
+void set_bgm_suppression(Obj klass, Obj player, bool muted) {
+	bool  disabled = muted;
+	void* args[1]  = {&disabled};
+	invoke(mono_class_get_method_from_name(klass, "SetBGMSuppressionDisabled", 1), player, args,
+	       "SetBGMSuppressionDisabled");
+}
+
+// fast.txt lists clips without a sound track as "!<path>" (the payload reads the mp4).
+bool clip_is_silent(const char* path) {
+	FILE* f = fopen("/system_tmp/liveshell/fast.txt", "r");
+	if (f == nullptr) {
+		return false;
+	}
+	char line[600];
+	bool silent = false;
+	while (!silent && fgets(line, sizeof(line), f) != nullptr) {
+		line[strcspn(line, "\r\n")] = 0;
+		silent = line[0] == '!' && strcmp(line + 1, path) == 0;
+	}
+	fclose(f);
+	return silent;
+}
+
+void player_volume(Obj klass, Obj player, int percent) {
+	int   v       = percent;
+	void* args[1] = {&v};
+	invoke(mono_class_get_method_from_name(klass, "SetVolume", 1), player, args, "SetVolume");
+}
+
+void player_mute(Obj klass, Obj player, bool muted) {
+	bool  m       = muted;
+	void* args[1] = {&m};
+	invoke(mono_class_get_method_from_name(klass, "SetIsMuted", 1), player, args, "SetIsMuted");
+}
+
+// Mute + current fade volume + BGM suppression on a player. Init/Play RESET mute and volume (test
+// v11-17: set before Init, read back unmuted at 100), so this runs before Init, right after Play and
+// again when the player settles (frame 15).
+void assert_sound(Obj klass, Obj player) {
+	g_aud_muted = g_vol_req.load() == 0;
+	player_mute(klass, player, g_aud_muted);
+	g_aud_set = static_cast<int>(g_aud_now + 0.5f);
+	player_volume(klass, player, g_aud_set);
+	set_bgm_suppression(klass, player, g_aud_muted || g_clip_silent);
 }
 
 Obj open_image(const char* path) {
@@ -626,6 +758,9 @@ int g_own_logs     = 0;
 int g_own_restarts = 0;
 bool g_own_loop_set = false;
 
+
+void set_blend(Obj view, bool overwrite);
+
 int start_own_player() {
 	Obj pui   = open_image("/system_ex/common_ex/lib/Sce.PlayStation.PUI.dll");
 	Obj video = open_image("/system_ex/common_ex/lib/Sce.Vsh.VideoPlayer.dll");
@@ -695,7 +830,8 @@ int start_own_player() {
 	property_set(widget_class, view, "Width", &width);
 	property_set(widget_class, view, "Height", &height);
 	property_set(widget_class, view, "Opacity", &zero); // focus_tick fades it in
-	property_set(view_class, view, "BlendMode", &overwrite);
+	(void)overwrite;
+	set_blend(view, false); // normal while it fades in; overwrite once fully shown (focus_tick)
 
 	bool  update_player      = true;
 	void* set_player_args[2] = {player, &update_player};
@@ -715,6 +851,16 @@ int start_own_player() {
 		return 48;
 	}
 
+	// Before it starts: muted = the PS5's own music (a game's theme) is not cut off.
+	g_clip_silent = clip_is_silent(g_video_path);
+	set_bgm_suppression(player_class, player, g_vol_req.load() == 0 || g_clip_silent);
+	// Sound from the very first frame as set: muted stays muted, otherwise it starts at 0 and fades
+	// in (sound_tick). Applied ~0.25 s late before, so a muted clip was heard for a moment (v11-16).
+	g_aud_now = 0.0f;
+	assert_sound(player_class, player);
+	if (g_clip_silent) {
+		wp_log("sound: clip has no sound track, PS5 music allowed");
+	}
 	bool  load         = true;
 	void* init_args[1] = {&load};
 	invoke(mono_class_get_method_from_name(player_class, "Init", 1), player, init_args, "Init");
@@ -722,6 +868,7 @@ int start_own_player() {
 	            "VideoView.Play")) {
 		return 49;
 	}
+	assert_sound(player_class, player); // Play reset it
 
 	bool  loop         = true;
 	void* loop_args[1] = {&loop};
@@ -830,6 +977,7 @@ void own_player_report() {
 			                       inner, loop_args, "VideoPlayer.SetLoop (view)");
 			wp_log("own player: SetLoop(true) on view.VideoPlayer %s (frame %d, same %d)",
 			       ok ? "ok" : "failed", g_own_frames, inner == g_own_player ? 1 : 0);
+			assert_sound(g_vplayer_class, inner); // settled: make sure nothing reset it
 		}
 	}
 
@@ -845,6 +993,17 @@ void own_player_report() {
 		    d != nullptr ? *static_cast<unsigned long long*>(mono_object_unbox(d)) : 0;
 		static int at_end = 0;
 		at_end = dur > 0 && pos >= dur ? at_end + 1 : 0;
+		// Watchdog: the position has not moved for ~3 s (not at the end): after rest mode the
+		// player stays frozen and nothing restarted it (user report). Restart the clip.
+		static unsigned long long last_pos = ~0ull;
+		static int                frozen   = 0;
+		frozen   = pos == last_pos && !(dur > 0 && pos >= dur) ? frozen + 1 : 0;
+		last_pos = pos;
+		if (frozen >= 12 && !g_stalled) {
+			frozen    = 0;
+			g_stalled = true;
+			wp_log("watchdog: video frozen at %llu/%llu ms for 3 s, restarting it", pos, dur);
+		}
 		if (at_end >= 3) {
 			at_end = 0;
 			unsigned long long zero = 0;
@@ -1389,7 +1548,27 @@ void raise_dim() {
 		return;
 	}
 	void* child[1] = {g_dim_panel};
-	invoke(find_method_up(g_ui3_widget, "RemoveChild", 1), g_dim_root, child, "RemoveChild(dim)");
+	// UI3.Widget has no RemoveChild (test v11-9); take it out by whichever detach method exists.
+	static Obj detach = nullptr;
+	static bool looked = false;
+	if (!looked) {
+		looked = true;
+		for (const char* n : {"RemoveFromParent", "RemoveChild", "Remove", "DetachFromParent"}) {
+			detach = find_method_up(g_ui3_widget, n, strcmp(n, "RemoveChild") == 0 ? 1 : 0);
+			if (detach != nullptr) {
+				wp_log("dim: detach with %s", n);
+				break;
+			}
+		}
+	}
+	if (detach != nullptr) {
+		const bool by_parent = mono_method_get_name != nullptr && strcmp(mono_method_get_name(detach), "RemoveChild") == 0;
+		if (by_parent) {
+			invoke(detach, g_dim_root, child, "RemoveChild(dim)");
+		} else {
+			invoke(detach, g_dim_panel, nullptr, "detach(dim)");
+		}
+	}
 	invoke(find_method_up(g_ui3_widget, "AppendChild", 1), g_dim_root, child, "AppendChild(dim)");
 }
 
@@ -1797,6 +1976,13 @@ bool  g_was_game    = false;
 bool  g_hold_black  = false; // back from a game, video not restarted yet: our panel stays black
 int   g_hold_start  = 0;
 int   g_hold_view_tick = -1;
+int   g_switch_at      = -1;  // quick swap (same folder): tick the fade to black started
+char  g_switch_path[512] = {};
+// Fast per-game switch (test v11-8): ShellUI picks the highlighted game's clip itself.
+char  g_fast_tid[16] = {};
+int   g_fast_at      = -1; // tick the highlighted tile changed (-1 = decided)
+void  stop_video();
+int   start_video();
 
 Obj find_class(const char* dll, const char* name) {
 	char path[160];
@@ -1998,6 +2184,89 @@ void set_blend(Obj view, bool overwrite) {
 	property_set(g_videoview_class, view, "BlendMode", &mode);
 }
 
+// ---- cross-fade swap: the new clip starts while the old one still plays -----------------------
+// The new view is appended on top, fades in over the old one, then the old one is removed: no black
+// at all. Needs a second decoder for a moment; if the new clip does not open within ~1 s, fall back
+// to the black swap for the rest of the session.
+Obj  g_old_view     = nullptr;
+Obj  g_old_player   = nullptr;
+int  g_xfade_tick   = -1;
+bool g_xfade_decoding = false; // the new clip decodes smoothly: start the dip transition
+int  g_xf_start      = 0;     // tick the dip started
+constexpr int kDipFrames = 54; // ~0.9 s clean cross-fade with a hint of dark in the middle
+bool g_xfade_broken = true; // cross-fade off (test v11-6: Sony's art showed); quick swap only
+
+void dispose_view(Obj view) {
+	if (view == nullptr || g_videoview_class == nullptr) {
+		return;
+	}
+	Obj stop    = find_method_up(g_videoview_class, "Stop", 0);
+	Obj dispose = find_method_up(g_videoview_class, "Dispose", 0);
+	if (stop != nullptr) {
+		invoke(stop, view, nullptr, "VideoView.Stop (old)");
+	}
+	invoke(dispose, view, nullptr, "VideoView.Dispose (old)");
+}
+
+void xfade_start() {
+	g_old_view     = g_own_view;
+	g_old_player   = g_own_player;
+	g_own_view     = nullptr; // start_own_player builds a fresh view; the old one keeps playing
+	g_own_player   = nullptr;
+	g_own_frames   = g_own_logs = g_own_restarts = 0;
+	g_own_loop_set = false;
+	snprintf(g_video_path, sizeof(g_video_path), "%s", g_switch_path);
+	if (start_video() != 0 || g_own_view == nullptr) {
+		wp_log("cross-fade: new clip did not start, black swap instead");
+		dispose_view(g_own_view);
+		g_own_view     = g_old_view;
+		g_own_player   = g_old_player;
+		g_old_view     = g_old_player = nullptr;
+		g_xfade_broken = true;
+		g_switch_at    = g_tick; // black swap path
+		return;
+	}
+	g_xfade_tick     = g_tick;
+	g_xfade_decoding = false;
+	wp_log("cross-fade: started");
+}
+
+void xfade_tick() {
+	if (g_xfade_tick < 0 || g_own_view == nullptr) {
+		return;
+	}
+	const int t = g_tick - g_xfade_tick;
+	if (!g_xfade_decoding) {
+		if (t % 5 != 0) {
+			return;
+		}
+		Obj q = property_get(g_videoview_class, g_own_view, "Position");
+		const unsigned long long pos = q != nullptr ? *static_cast<unsigned long long*>(mono_object_unbox(q)) : 0;
+		if (pos >= 150) {
+			g_xfade_decoding = true; // decoding smoothly now: focus_tick runs the dip transition
+			g_xf_start       = g_tick;
+			wp_log("cross-fade: new clip decoding after %d frames", t);
+		} else if (t >= 90) {
+			// No second decoder: undo, then black swap from now on.
+			wp_log("cross-fade: new clip not decoding after %d frames, black swap instead", t);
+			dispose_view(g_own_view);
+			g_own_view     = g_old_view;
+			g_own_player   = g_old_player;
+			g_old_view     = g_old_player = nullptr;
+			g_xfade_tick   = -1;
+			g_xfade_broken = true;
+			g_switch_at    = g_tick;
+		}
+		return;
+	}
+	if (g_tick - g_xf_start >= kDipFrames) {
+		dispose_view(g_old_view); // the new clip fully covers it
+		g_old_view = g_old_player = nullptr;
+		g_xfade_tick = -1;
+		wp_log("cross-fade: done after %d frames", t);
+	}
+}
+
 void focus_tick() {
 	if (!g_focus_ready) {
 		setup_focus();
@@ -2047,8 +2316,10 @@ void focus_tick() {
 		// A freshly started video (boot, switch, back from a game) fades in on its own instead of
 		// popping in at full strength (test 28: after "Closing..." it appeared at once).
 		g_view_in = view != nullptr ? 0.0f : 1.0f;
-		if (view != nullptr && g_hold_black && g_hold_view_tick < 0) {
-			g_hold_view_tick = g_tick; // the video is back: cross-fade black -> video
+		if (view != nullptr && g_hold_black) {
+			// Under the black cover: full strength at once, so lifting the black never shows what is
+			// behind (a half-faded clip let Sony's game art blink through, test v11-7).
+			g_view_in = 1.0f;
 		}
 	}
 	// Back from a game while "Pause while a game runs" has the video stopped: Sony's background
@@ -2072,7 +2343,56 @@ void focus_tick() {
 	// Starting a game: no black any more (user, test 30): our layers fade out slowly (below) and
 	// the game's own launch background shows through.
 	float to_black = 0.0f;
-	if (g_hold_black && !(hide && game)) {
+	if (g_switch_at >= 0 && !g_xfade_broken && g_xfade_tick < 0 && g_own_view != nullptr) {
+		g_switch_at = -1;
+		xfade_start();
+	}
+	xfade_tick();
+	if (g_switch_at >= 0) {
+		const int t = g_tick - g_switch_at;
+		if (t < 7) { // fade to black ~0.12 s
+			const float k = static_cast<float>(t) / 7.0f;
+			to_black      = k * k * (3.0f - 2.0f * k);
+		} else if (g_aud_now > 0.5f && g_own_player != nullptr && t < 40) {
+			to_black = 1.0f; // black already; the old clip's sound is still fading out (quick moves cut it)
+		} else {
+			// Black now: swap the clip at once (no 2 s release wait; same folder stays mounted), then
+			// hold black until the new view is there and cross-fade into it.
+			g_switch_at = -1;
+			stop_video();
+			if (g_switch_path[0] == 0) { // a tile without video: no new clip, lift the black at once
+				write_status("stopped");
+				g_hold_black     = true;
+				g_hold_start     = g_tick;
+				g_hold_view_tick = g_tick;
+				to_black         = 1.0f;
+				return;
+			}
+			snprintf(g_video_path, sizeof(g_video_path), "%s", g_switch_path);
+			start_video();
+			g_hold_black     = true;
+			g_hold_start     = g_tick;
+			g_hold_view_tick = -1;
+			to_black         = 1.0f;
+		}
+	} else if (g_xfade_tick >= 0 && g_xfade_decoding) {
+		// Game-to-game transition, like the Settings fade but short: dark peaks halfway (70 %).
+		const float k = static_cast<float>(g_tick - g_xf_start) / static_cast<float>(kDipFrames);
+		to_black      = k >= 1.0f ? 0.0f : 0.25f * sinf(3.14159265f * k);
+	} else if (g_hold_black && !(hide && game)) {
+		if (g_hold_view_tick < 0 && view != nullptr && true) { // every frame: lift the black as soon as it draws
+			// Lift the black only once the new clip really draws frames.
+			bool drawing = view != g_own_view || g_videoview_class == nullptr;
+			if (!drawing) {
+				Obj q = property_get(g_videoview_class, view, "Position");
+				drawing = q != nullptr && *static_cast<unsigned long long*>(mono_object_unbox(q)) >= 40;
+			}
+			if (drawing) {
+				g_hold_view_tick = g_tick;
+				// How long the decoder took for its first frames (0.4 s normally; slower after rest).
+				wp_log("shown: first frames %d ms after the start", (g_tick - g_hold_start) * 1000 / 60);
+			}
+		}
 		if (g_hold_view_tick < 0 && g_tick - g_hold_start > 300) {
 			g_hold_view_tick = g_tick; // no video came: let Sony's background show after all
 		}
@@ -2080,10 +2400,10 @@ void focus_tick() {
 			to_black = 1.0f;
 		} else {
 			const int t = g_tick - g_hold_view_tick;
-			if (t >= 30) {
+			if (t >= 12) { // black -> video ~0.2 s
 				g_hold_black = false;
 			} else {
-				const float k = static_cast<float>(t) / 30.0f;
+				const float k = static_cast<float>(t) / 12.0f;
 				to_black      = 1.0f - k * k * (3.0f - 2.0f * k);
 			}
 		}
@@ -2106,7 +2426,17 @@ void focus_tick() {
 	} else {
 		g_fade = g_fade - 1.0f / 24.0f < 0.0f ? 0.0f : g_fade - 1.0f / 24.0f;
 	}
-	g_view_in = g_view_in + 1.0f / 30.0f > 1.0f ? 1.0f : g_view_in + 1.0f / 30.0f;
+	const bool xfading = g_xfade_tick >= 0;
+	if (xfading && !g_xfade_decoding) {
+		g_view_in = 0.0f; // invisible until it decodes smoothly
+	} else if (xfading) {
+		// The new clip rises during the middle half of the dip, while the panel is darkest.
+		const float t = static_cast<float>(g_tick - g_xf_start) - 4.0f;
+		g_view_in     = t <= 0.0f ? 0.0f : (t >= 44.0f ? 1.0f : t / 44.0f);
+	} else {
+		const float step = xfading ? 1.0f / 36.0f : 1.0f / 30.0f;
+		g_view_in        = g_view_in + step > 1.0f ? 1.0f : g_view_in + step;
+	}
 	// Going out: ease-in-out (slow start, slow end). Coming back home: ease-out, i.e. our layers
 	// cover Sony's background almost at once and then settle (test 26).
 	float next;
@@ -2117,7 +2447,9 @@ void focus_tick() {
 	} else {
 		next = 1.0f - g_fade * g_fade * g_fade;
 	}
-	const float vi      = 1.0f - (1.0f - g_view_in) * (1.0f - g_view_in) * (1.0f - g_view_in); // ease-out
+	// Cross-fade: smoothstep (soft start + soft end, like Sony's art fade); a lone new clip: ease-out.
+	const float vi      = xfading ? g_view_in * g_view_in * (3.0f - 2.0f * g_view_in)
+	                              : 1.0f - (1.0f - g_view_in) * (1.0f - g_view_in) * (1.0f - g_view_in);
 	float       view_op = next * vi;
 	if (view != nullptr && view_op != g_view_op) {
 		const bool was_full = g_view_op >= 1.0f || g_view_op < 0.0f;
@@ -2234,6 +2566,153 @@ void parallax_tick() {
 	property_set(g_ui3_widget, view, "X", &x);
 }
 
+// ---- v1.1: per-game backgrounds (highlighted tile) and the game-music block --------------------
+
+bool detour_method(const char* dll, const char* klass_name, const char* method, int argc, void* hook, void** orig) {
+	Obj k = find_class(dll, klass_name);
+	Obj m = k != nullptr ? mono_class_get_method_from_name(k, method, argc) : nullptr;
+	const uint64_t addr = m != nullptr ? reinterpret_cast<uint64_t>(mono_compile_method(m)) : 0;
+	const uintptr_t old_authid = set_ucred_to_ptrace();
+	const bool ok = addr != 0 && InstallDetour(addr, hook, orig) && *orig != nullptr;
+	if (old_authid != 0) {
+		set_proc_authid(getpid(), old_authid);
+	}
+	wp_log("hook %s.%s(%d): %s", klass_name, method, argc, ok ? "installed" : "FAILED");
+	return ok;
+}
+
+// BGLayerPlugin.SetBackgroundTransition(BackgroundTransitionParam): runs when a home tile gets
+// focus. Log AppName / DeeplinkUrl / NextImageUri to learn how to read the focused game.
+using SetBgFn = uint64_t (*)(Obj self, Obj param);
+SetBgFn g_setbg_orig = nullptr;
+Obj     g_setbg_class = nullptr;
+
+const char* prop_text(Obj obj, const char* name) {
+	Obj v = property_get(g_setbg_class, obj, name);
+	if (v == nullptr) {
+		return "";
+	}
+	Obj         inner = nullptr;
+	Obj         str   = mono_object_to_string(v, &inner);
+	const char* u     = str != nullptr && inner == nullptr ? mono_string_to_utf8(static_cast<char*>(str)) : nullptr;
+	return u != nullptr ? u : "?";
+}
+
+uint64_t SetBg_Hook(Obj self, Obj param) {
+	if (param != nullptr) {
+		if (g_setbg_class == nullptr) {
+			g_setbg_class = mono_object_get_class(param);
+		}
+		// The highlighted tile's art: /user/appmeta/<TID>/pic0.dds or /user/app/<TID>/sce_sys/pic0.dds;
+		// non-game tiles use bg_hub_default. Tell the payload which game is highlighted.
+		const char* img = prop_text(param, "NextImageUri");
+		if (img != nullptr && img[0] != 0) {
+			std::string tid;
+			for (const char* key : {"/user/appmeta/", "/user/app/"}) {
+				const char* p = strstr(img, key);
+				if (p != nullptr && tid.empty()) {
+					tid.assign(p + strlen(key), strnlen(p + strlen(key), 9));
+				}
+			}
+			static std::string last = "?";
+			if (tid != last) {
+				last = tid;
+				snprintf(g_fast_tid, sizeof(g_fast_tid), "%s", tid.c_str());
+				g_fast_at = g_tick;
+				g_focus_new = true;
+				if (!to_payload('F', tid.c_str(), tid.size())) {
+					if (FILE* f = fopen("/system_tmp/liveshell/focus_game.txt", "w")) {
+						fprintf(f, "%s\n", tid.c_str());
+						fclose(f);
+					}
+				}
+			}
+		}
+	}
+	return g_setbg_orig(self, param);
+}
+
+using Gen6 = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+Gen6 g_sysbgm_orig = nullptr;
+
+// A title id inside Sony's text (PPSA01325, CUSA12345, ...): 4 capitals + 5 digits.
+std::string title_in(const char* t) {
+	for (const char* q = t; q != nullptr && q[0] != 0; ++q) {
+		bool ok = true;
+		for (int i = 0; i < 9 && ok; ++i) {
+			ok = i < 4 ? (q[i] >= 'A' && q[i] <= 'Z') : (q[i] >= '0' && q[i] <= '9');
+		}
+		if (ok && !(q[9] >= '0' && q[9] <= '9') && (q == t || !(q[-1] >= 'A' && q[-1] <= 'Z'))) {
+			return std::string(q, 9);
+		}
+	}
+	return {};
+}
+
+std::string obj_text(Obj o) {
+	if (o == nullptr) {
+		return {};
+	}
+	Obj         inner = nullptr;
+	Obj         str   = mono_object_to_string(o, &inner);
+	const char* u     = str != nullptr && inner == nullptr ? mono_string_to_utf8(static_cast<char*>(str)) : nullptr;
+	return u != nullptr ? u : std::string();
+}
+
+bool fast_lookup(const char* tid, char* out, size_t n); // below, with the fast switch
+
+int g_bgm_logs = 0;
+
+// SceneControlModule.SetSystemBgm(JObject arg, IPromise promise): Sony starts the highlighted tile's
+// music here, the same instant the tile is highlighted (test v11-16), so our player can only silence
+// it ~0.4 s later = a blip of e.g. ASTRO's theme. When that tile's clip has sound (and Sound is not
+// Mute) the call is answered (promise resolved) but not run. Only when the call itself names the
+// title, so another tile's music is never blocked by mistake.
+uint64_t setsysbgm_hook(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
+	const std::string text = obj_text(reinterpret_cast<Obj>(b));
+	const std::string tid  = title_in(text.c_str());
+	char              path[512];
+	const bool block = !tid.empty() && g_own_player != nullptr && g_vol_req.load() > 0 &&
+	                   fast_lookup(tid.c_str(), path, sizeof(path)) && path[0] == '/' && !clip_is_silent(path);
+	if (block && g_bgm_logs < 20) {
+		++g_bgm_logs;
+		wp_log("bgm SetSystemBgm (tick %d) tile '%s' -> %s: %.240s", g_tick, tid.c_str(), block ? "BLOCKED" : "runs",
+		       text.c_str());
+	}
+	if (!block) {
+		return g_sysbgm_orig(a, b, c, d, e, f);
+	}
+	Obj promise = reinterpret_cast<Obj>(c);
+	Obj pk      = promise != nullptr ? mono_object_get_class(promise) : nullptr;
+	Obj resolve = pk != nullptr ? mono_class_get_method_from_name(pk, "Resolve", 1) : nullptr;
+	void* args[1] = {nullptr};
+	if (resolve == nullptr || !invoke(resolve, promise, args, "IPromise.Resolve")) {
+		wp_log("bgm: could not answer the promise, letting Sony's call run");
+		return g_sysbgm_orig(a, b, c, d, e, f);
+	}
+	return 0;
+}
+
+// Highlighted tile -> per-game clip; SetSystemBgm (JObject, IPromise: this + 2 pointers) -> game music.
+int g_sysbgm_at = -1; // when to hook SetSystemBgm
+
+void v11_setup() {
+	detour_method("Sce.Vsh.ShellUI.BGLayer", "BGLayerPlugin", "SetBackgroundTransition", 1,
+	              reinterpret_cast<void*>(&SetBg_Hook), reinterpret_cast<void**>(&g_setbg_orig));
+	// ~10 s later, when the home screen is up: the tested v1.1 builds hooked it then; hooking it at
+	// setup is the main change in the build that froze ShellUI on load (v1.1-rc3).
+	g_sysbgm_at = g_tick + 600;
+}
+
+void sysbgm_tick() {
+	if (g_sysbgm_at < 0 || g_tick < g_sysbgm_at) {
+		return;
+	}
+	g_sysbgm_at = -1;
+	detour_method("Sce.Vsh.ShellUI.ReactNativeShellApp", "SceneControlModule", "SetSystemBgm", 2,
+	              reinterpret_cast<void*>(&setsysbgm_hook), reinterpret_cast<void**>(&g_sysbgm_orig));
+}
+
 // ---- crash-loop guard ------------------------------------------------------------------------
 
 bool guard_exists() {
@@ -2311,6 +2790,11 @@ bool video_active() {
 // Stop the current clip. Called on the UI thread only. The player itself is not disposed here:
 // the view owns it, and a second Dispose on it is not known to be safe.
 void stop_video() {
+	if (g_old_view != nullptr) { // a cross-fade was running: the old clip goes too
+		dispose_view(g_old_view);
+		g_old_view = g_old_player = nullptr;
+		g_xfade_tick = -1;
+	}
 	if (g_own_view != nullptr) {
 		Obj view   = g_own_view;
 		g_own_view = nullptr; // own_player_report stops touching it from now on
@@ -2354,6 +2838,142 @@ int start_video() {
 	return rc;
 }
 
+// Quick swap to a clip in the mounted folder: fade to black, swap, lift the black once it draws.
+void begin_swap(const char* path) {
+	snprintf(g_switch_path, sizeof(g_switch_path), "%s", path);
+	if (g_switch_at >= 0) {
+		return; // already fading to black: it takes the new path
+	}
+	g_switch_at = g_hold_black ? g_tick - 7 : g_tick; // already black: swap at once
+	wp_log("quick swap to %s", g_switch_path);
+}
+
+// The payload's map (fast.txt): "*=<main clip>", then "TITLEID=<clip>"; "-" = it must remount
+// first and switches itself.
+bool fast_lookup(const char* tid, char* out, size_t n) {
+	FILE* f = fopen("/system_tmp/liveshell/fast.txt", "r");
+	if (f == nullptr) {
+		return false;
+	}
+	char         line[600];
+	char         main_clip[512] = {};
+	bool         found          = false;
+	const size_t tl             = strlen(tid);
+	out[0]                      = 0;
+	while (fgets(line, sizeof(line), f) != nullptr) {
+		line[strcspn(line, "\r\n")] = 0;
+		if (line[0] == '*' && line[1] == '=') {
+			snprintf(main_clip, sizeof(main_clip), "%s", line + 2);
+		} else if (tl > 0 && strncmp(line, tid, tl) == 0 && line[tl] == '=') {
+			snprintf(out, n, "%s", line + tl + 1);
+			found = true;
+		}
+	}
+	fclose(f);
+	if (!found) {
+		snprintf(out, n, "%s", main_clip);
+	}
+	return out[0] == '/' || strcmp(out, "off") == 0; // "off" = no video on this tile ("Main video" off)
+}
+
+// Restart a frozen clip (watchdog above) with the normal swap, on the home screen only (a game in
+// front may pause it on purpose).
+void stall_tick() {
+	if (!g_stalled) {
+		return;
+	}
+	if (!video_active() || g_stopping || g_switch_at >= 0 || g_hidden || g_is_settings) {
+		g_stalled = false; // a game / Settings / system app in front may pause it on purpose
+		return;
+	}
+	g_stalled = false;
+	begin_swap(g_video_path);
+}
+
+// ~0.25 s on the same tile: switch to its clip right here, no round trip through the payload.
+void fast_tick() {
+	if (g_fast_at < 0 || g_tick - g_fast_at < 12) { // ~0.2 s on the tile
+		return;
+	}
+	g_fast_at = -1;
+	char path[512];
+	if (g_stopping || !fast_lookup(g_fast_tid, path, sizeof(path))) {
+		return;
+	}
+	if (strcmp(path, "off") == 0) { // "Main video" off and no clip of its own: fade to Sony's background
+		if (video_active() && !(g_switch_at >= 0 && g_switch_path[0] == 0)) {
+			wp_log("fast: %s has no video, stopping", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)");
+			g_switch_path[0] = 0;
+			if (g_switch_at < 0) {
+				g_switch_at = g_hold_black ? g_tick - 7 : g_tick;
+			}
+		}
+		return;
+	}
+	if (!video_active()) { // nothing playing (a tile without video before): start it right here
+		struct stat st0 {};
+		if (g_switch_at < 0 && stat(path, &st0) == 0) {
+			wp_log("fast: %s, starting %s", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)", path);
+			snprintf(g_video_path, sizeof(g_video_path), "%s", path);
+			start_video();
+		}
+		return;
+	}
+	if (strcmp(path, g_switch_at >= 0 ? g_switch_path : g_video_path) == 0) {
+		return;
+	}
+	struct stat st {};
+	if (stat(path, &st) == 0) {
+		wp_log("fast: %s", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)");
+		begin_swap(path);
+	}
+}
+
+// The moment a tile is highlighted Sony starts its music (SceneControlModule.SetSystemBgm, same
+// frame, test v11-16), ~0.4 s before our swap. So the CURRENT player already holds the PS5 music
+// back or lets it play, as the next tile's clip will: no burst of game music, no gap.
+void focus_sound_tick() {
+	if (!g_focus_new) {
+		return;
+	}
+	g_focus_new = false;
+	char path[512];
+	if (g_own_player == nullptr || g_vplayer_class == nullptr || !fast_lookup(g_fast_tid, path, sizeof(path))) {
+		return;
+	}
+	const bool ours = path[0] == '/' && g_vol_req.load() > 0 && !clip_is_silent(path); // its sound replaces it
+	set_bgm_suppression(g_vplayer_class, g_own_player, !ours);
+	wp_log("sound: %s highlighted (tick %d) -> PS5 music %s", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)", g_tick,
+	       ours ? "held back" : "allowed");
+}
+
+// Sound fades: out with the fade to black of a swap (~0.17 s), in over ~0.5 s for a new clip or
+// a new setting. Mute = SetIsMuted at once.
+void sound_tick() {
+	if (g_own_player == nullptr || g_vplayer_class == nullptr) {
+		return;
+	}
+	const int  want  = g_vol_req.load();
+	const bool muted = want == 0;
+	if (muted != g_aud_muted) {
+		g_aud_muted = muted;
+		player_mute(g_vplayer_class, g_own_player, muted);
+		set_bgm_suppression(g_vplayer_class, g_own_player, muted || g_clip_silent);
+		wp_log("sound: %s", muted ? "muted, PS5 music allowed" : "on");
+	}
+	const float goal = g_switch_at >= 0 ? 0.0f : static_cast<float>(want);
+	if (g_aud_now < goal) {
+		g_aud_now = g_aud_now + 2.4f > goal ? goal : g_aud_now + 2.4f; // in: 100 % in ~0.7 s
+	} else if (g_aud_now > goal) {
+		g_aud_now = g_aud_now - 8.5f < goal ? goal : g_aud_now - 8.5f; // out: 100 % in ~0.2 s
+	}
+	const int v = static_cast<int>(g_aud_now + 0.5f);
+	if (v != g_aud_set) {
+		g_aud_set = v;
+		player_volume(g_vplayer_class, g_own_player, v);
+	}
+}
+
 // Switching (UI thread): stop the old clip, give the decoder ~2 s to let go of the file (the daemon
 // unmounts its folder after "stopped"), then start the new one if the request is a path.
 void handle_requests() {
@@ -2366,6 +2986,22 @@ void handle_requests() {
 	}
 	if (!g_have_req) {
 		return;
+	}
+	if (strncmp(g_req_take, "switch:", 7) == 0) {
+		if (g_xfade_tick >= 0) {
+			return; // a cross-fade is still running: take this request when it is done
+		}
+		memmove(g_req_take, g_req_take + 7, strlen(g_req_take + 7) + 1);
+		struct stat sw {};
+		if (video_active() && !g_stopping && stat(g_req_take, &sw) == 0) {
+			g_have_req = false;
+			// The fast switch usually got there first: same clip = nothing to do.
+			if (strcmp(g_req_take, g_switch_at >= 0 ? g_switch_path : g_video_path) != 0) {
+				begin_swap(g_req_take);
+			}
+			return;
+		}
+		// nothing playing: normal path below
 	}
 	if (!g_stopping && video_active()) {
 		stop_video();
@@ -2406,6 +3042,11 @@ void Update_Hook(Obj self) {
 	own_player_report();
 	if (g_installed) {
 		handle_requests();
+		focus_sound_tick();
+		fast_tick();
+		sysbgm_tick();
+		stall_tick();
+		sound_tick();
 		refresh_dim();
 		refresh_blur();
 		refresh_looks();
@@ -2423,6 +3064,9 @@ void Update_Hook(Obj self) {
 	}
 	const int rc = install_bglayer();
 	wp_log("setup done (%d)", rc);
+	if (rc == 0) {
+		v11_setup();
+	}
 	if (rc != 0) {
 		write_status("failed setup %d", rc);
 		char text[80];
@@ -2456,17 +3100,20 @@ void read_request_line(char* out, size_t size) {
 }
 
 void* wallpaper_thread(void*) {
-	sleep(5);
+	sleep(3); // was 5: a quicker first picture
 	char seen[512];
 	read_request_line(seen, sizeof(seen));
 	if (guard_exists()) {
 		wp_log("video: last attempt did not survive (%s still there)", kGuardFile);
 	} else if (!choose_video()) {
 		// strict: the configured video or nothing
-	} else if (guard_create()) {
-		g_video_wanted.store(true, std::memory_order_release);
 	} else {
-		wp_log("video: cannot write %s", kGuardFile);
+		// ShellUI often may not create files any more (its ~16 KB write budget, test v11-24): the video
+		// then waited for the first tile change. Start anyway; the payload stops crash loops itself.
+		if (!guard_create()) {
+			wp_log("video: cannot write %s, starting anyway", kGuardFile);
+		}
+		g_video_wanted.store(true, std::memory_order_release);
 	}
 	g_pending.store(true, std::memory_order_release);
 	wp_log("queued for the UI thread");
@@ -2479,6 +3126,20 @@ void* wallpaper_thread(void*) {
 			if (fscanf(f, "%d", &dim) == 1 && dim >= 0 && dim <= 90 && dim != g_dim_req.load()) {
 				g_dim_req.store(dim);
 				wp_log("dim request: %d%%", dim);
+			}
+			fclose(f);
+		}
+		// Repeat the status every ~2 s: a payload started while we already play learns it at once
+		// (it waited 40 s for a change before, test v11-24).
+		static int status_beat = 0;
+		if (++status_beat >= 7 && g_last_status[0] != 0) {
+			status_beat = 0;
+			to_payload('S', g_last_status, strlen(g_last_status));
+		}
+		if (FILE* f = fopen(kVolumeFile, "r")) {
+			int vol = -1;
+			if (fscanf(f, "%d", &vol) == 1 && vol >= 0 && vol <= 100 && vol != g_vol_req.load()) {
+				g_vol_req.store(vol);
 			}
 			fclose(f);
 		}
@@ -2542,6 +3203,7 @@ extern "C" int main(int argc, char const* argv[]) {
 	mkdir("/system_tmp/liveshell", 0777);
 	g_log   = open(kLogFile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 	g_t0_ms = now_ms();
+	ui_channel_open();
 	const pid_t pid = getpid();
 	wp_log("LiveShell ShellUI module starting (pid %d)", static_cast<int>(pid));
 

@@ -15,7 +15,9 @@
 #include "liveshell.hpp"
 
 #include <algorithm>
+#include <map>
 #include <arpa/inet.h>
+#include <cctype>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
+#include <atomic>
 #include <mutex>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -48,6 +51,10 @@ uintptr_t set_proc_authid(pid_t pid, uintptr_t new_authid);
 int       sceKernelTerminateProcess(int pid, int* ret);
 int       sceSystemServiceGetAppIdOfRunningBigApp(void);
 int       sceSystemServiceGetAppTitleId(int app_id, char* title_id);
+int       kernel_dynlib_handle(pid_t pid, const char* basename, uint32_t* handle);
+int       sceKernelOpenEventFlag(intptr_t* event_flag, const char* name);
+int       sceKernelPollEventFlag(intptr_t event_flag, uint64_t bits, unsigned int wait_mode, uint64_t* result);
+int       sceKernelCloseEventFlag(intptr_t event_flag);
 int  sceKernelSendNotificationRequest(int, void*, size_t, int);
 extern uint8_t liveshell_shellui_elf_start[];
 }
@@ -68,6 +75,7 @@ constexpr const char* kPathFile       = "/system_tmp/liveshell/video.txt";
 constexpr const char* kStatusFile     = "/system_tmp/liveshell/status.txt";
 constexpr const char* kShellUiLog     = "/system_tmp/liveshell/shellui.log";
 constexpr const char* kDimFile        = "/system_tmp/liveshell/dim.txt";
+constexpr const char* kVolumeFile     = "/system_tmp/liveshell/volume.txt";
 constexpr const char* kBlurFile       = "/system_tmp/liveshell/blur.txt";
 constexpr const char* kMenusFile      = "/system_tmp/liveshell/menus.txt";
 constexpr const char* kLooksFile      = "/system_tmp/liveshell/looks.txt";
@@ -91,14 +99,19 @@ std::mutex    g_log_lock;
 std::mutex  g_ctl;
 bool        g_enabled  = true;
 int         g_dim      = 25;    // default on: clips are often bright
+int         g_volume   = 100;   // sound of clips that have it, 0..100 %
 int         g_blur     = 0;     // 0 off, 1 light, 2 strong
 int         g_looks[4] = {0, 0, 0, 0}; // bottom fade, top fade, vignette, haze: 0 off, 1 light, 2 strong
 bool        g_shuffle  = false; // a random clip each time the payload starts (off by default)
+bool        g_main_video = true; // off = only tiles with their own video play one
+bool        g_game_videos = true; // off = per-game videos ignored (games.txt kept)
 bool        g_game_pause = true; // no video while a game runs
 bool        g_menu_hide  = true;  // hide the video in Settings / system apps (default: safer)
 bool        g_parallax   = false; // nudge the video when moving between home tiles
 bool        g_game_running = false;
 std::string g_game_title;
+std::string g_override;     // per-game clip playing instead of g_current ("" = main wallpaper)
+volatile bool g_focus_recheck = false; // games.txt changed: re-evaluate the highlighted game now
 std::string g_current;          // real path of the chosen clip
 std::string g_mounted_folder;   // folder currently mounted on kMountPoint
 bool        g_injected = false; // the ShellUI module is running (it reacts to the path file)
@@ -300,6 +313,8 @@ void load_config() {
 			g_current = line.substr(6);
 		} else if (line.rfind("dim=", 0) == 0) {
 			g_dim = std::max(0, std::min(80, atoi(line.c_str() + 4)));
+		} else if (line.rfind("volume=", 0) == 0) {
+			g_volume = std::max(0, std::min(100, atoi(line.c_str() + 7)));
 		} else if (line.rfind("looks=", 0) == 0) {
 			sscanf(line.c_str() + 6, "%d %d %d %d", &g_looks[0], &g_looks[1], &g_looks[2], &g_looks[3]);
 			for (int& v : g_looks) {
@@ -308,6 +323,10 @@ void load_config() {
 			g_looks[0] = g_looks[1] = 0; // bottom / top fade were removed (user)
 		} else if (line.rfind("blur=", 0) == 0) {
 			g_blur = std::max(0, std::min(2, atoi(line.c_str() + 5)));
+		} else if (line.rfind("gamevideos=", 0) == 0) {
+			g_game_videos = line.substr(11) != "0";
+		} else if (line.rfind("mainvideo=", 0) == 0) {
+			g_main_video = line.substr(10) != "0";
 		} else if (line.rfind("shuffle=", 0) == 0) {
 			g_shuffle = line.substr(8) != "0";
 		} else if (line.rfind("parallax=", 0) == 0) {
@@ -325,6 +344,7 @@ void load_config() {
 	log("config: enabled=%d video=%s dim=%d shuffle=%d gamepause=%d", g_enabled ? 1 : 0, g_current.c_str(), g_dim,
 	    g_shuffle ? 1 : 0, g_game_pause ? 1 : 0);
 	write_text(kDimFile, std::to_string(g_dim) + "\n");
+	write_text(kVolumeFile, std::to_string(g_volume) + "\n");
 	write_text(kBlurFile, std::to_string(g_blur) + "\n");
 	write_text(kMenusFile, g_menu_hide ? "1\n" : "0\n");
 	write_looks();
@@ -332,14 +352,123 @@ void load_config() {
 }
 
 void save_config() {
-	write_text(kConfigFile, std::string("enabled=") + (g_enabled ? "1" : "0") + "\nvideo=" + g_current + "\ndim=" + std::to_string(g_dim) + "\nblur=" + std::to_string(g_blur) + "\nlooks=" + looks_text() +
-	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\n");
+	write_text(kConfigFile, std::string("enabled=") + (g_enabled ? "1" : "0") + "\nvideo=" + g_current + "\ndim=" + std::to_string(g_dim) + "\nvolume=" + std::to_string(g_volume) + "\nblur=" + std::to_string(g_blur) + "\nlooks=" + looks_text() +
+	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=" + (g_main_video ? "1" : "0") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\n");
 }
 
 // ---- telling ShellUI what to play ------------------------------------------------------------
 
+// ---- messages from our ShellUI module (UDP 127.0.0.1:9051) ------------------------------------
+// ShellUI may only write ~16 KB of files per run (test v11-8: status.txt vanished, every switch took
+// the slow path), so it sends "S<status>", "F<title id>", "L<log line>" here instead.
+constexpr int         kUiPort    = 9051;
+constexpr const char* kUiLogFile = "/data/LiveShell/shellui.log";
+std::mutex            g_ui_lock;
+std::string           g_ui_status, g_ui_focus;
+bool                  g_ui_status_set = false, g_ui_focus_set = false;
+std::atomic<long>     g_ui_bytes{0}; // everything received: ShellUI is alive when this grows
+
+void ui_forget_status() {
+	std::lock_guard<std::mutex> lock(g_ui_lock);
+	g_ui_status_set = false;
+	g_ui_status.clear();
+}
+
+void ui_set_focus(const std::string& tid) {
+	std::lock_guard<std::mutex> lock(g_ui_lock);
+	g_ui_focus     = tid;
+	g_ui_focus_set = true;
+}
+
 std::string shellui_status() {
+	{
+		std::lock_guard<std::mutex> lock(g_ui_lock);
+		if (g_ui_status_set) {
+			return g_ui_status;
+		}
+	}
 	return first_line(read_text(kStatusFile, 700));
+}
+
+std::string shellui_focus() {
+	{
+		std::lock_guard<std::mutex> lock(g_ui_lock);
+		if (g_ui_focus_set) {
+			return g_ui_focus;
+		}
+	}
+	return first_line(read_text("/system_tmp/liveshell/focus_game.txt", 64));
+}
+
+int open_ui_port() {
+	const int   s = socket(AF_INET, SOCK_DGRAM, 0);
+	sockaddr_in a {};
+	a.sin_family      = AF_INET;
+	a.sin_port        = htons(kUiPort);
+	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (s < 0 || bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) {
+		log("ui channel: bind failed (errno %d), ShellUI falls back to files", errno);
+		if (s >= 0) {
+			close(s);
+		}
+		return -1;
+	}
+	timeval tv {1, 0}; // recv wakes up every second: rest mode / reopen checks
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	return s;
+}
+
+void* ui_thread(void*) {
+	int       s  = -1, fails = 0, epoch = net_epoch(); // reopened after rest mode (see power_thread)
+	const int lf = open(kUiLogFile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	char      buf[1600];
+	while (g_running) {
+		if (s >= 0 && epoch != net_epoch()) {
+			log("ui channel: reopening after rest mode");
+			close(s);
+			s = -1;
+		}
+		if (s < 0) {
+			epoch = net_epoch();
+			s     = open_ui_port();
+			if (s < 0) {
+				sleep(2);
+				continue;
+			}
+			fails = 0;
+		}
+		const ssize_t n = recv(s, buf, sizeof(buf) - 1, 0);
+		if (n < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				continue; // the 1 s timeout
+			}
+			if (++fails >= 40) {
+				log("ui channel broken (errno %d), reopening", errno);
+				close(s);
+				s = -1;
+			}
+			usleep(50 * 1000);
+			continue;
+		}
+		fails = 0;
+		if (n == 0) {
+			continue;
+		}
+		g_ui_bytes += n;
+		if (buf[0] == 'S' || buf[0] == 'F') {
+			std::lock_guard<std::mutex> lock(g_ui_lock);
+			(buf[0] == 'S' ? g_ui_status : g_ui_focus).assign(buf + 1, static_cast<size_t>(n - 1));
+			(buf[0] == 'S' ? g_ui_status_set : g_ui_focus_set) = true;
+		} else if (buf[0] == 'L' && lf >= 0) {
+			struct stat st {};
+			if (fstat(lf, &st) == 0 && st.st_size > 2 * 1024 * 1024) {
+				(void)ftruncate(lf, 0);
+				(void)lseek(lf, 0, SEEK_SET);
+			}
+			(void)write(lf, buf + 1, static_cast<size_t>(n - 1));
+		}
+	}
+	return nullptr;
 }
 
 // Wait until ShellUI no longer holds a clip (so its folder can be unmounted safely).
@@ -354,9 +483,62 @@ bool wait_shellui_stopped(int timeout_ms) {
 	return false;
 }
 
-// Caller holds g_ctl.
+// The folder we mount for a clip: the whole video tree (internal video folder, or the USB liveshell
+// folder), so clips in game subfolders (video/PPSA01234/) share one mount and can cross-fade.
+std::string mount_base(const std::string& clip) {
+	const std::string internal = "/data/LiveShell/video";
+	if (clip.rfind(internal + "/", 0) == 0) {
+		return internal;
+	}
+	if (clip.rfind("/mnt/usb", 0) == 0) {
+		const size_t a = clip.find('/', 5);               // after "/mnt/"
+		const size_t b = a == std::string::npos ? a : clip.find('/', a + 1); // end of the liveshell folder
+		if (b != std::string::npos) {
+			return clip.substr(0, b);
+		}
+	}
+	return folder_of(clip);
+}
+
+std::string shown_path(const std::string& clip) {
+	return std::string(kMountPoint) + clip.substr(mount_base(clip).size());
+}
+
+// write_fast_map(): below, with games.txt (declared in liveshell.hpp)
+
+bool apply_inner(std::string& error);
+
+// Caller holds g_ctl. Every change also refreshes ShellUI's fast-switch map.
 bool apply_locked(std::string& error) {
-	const bool want_video = g_enabled && !(g_game_pause && g_game_running) && !g_current.empty() && exists(g_current.c_str());
+	const bool ok = apply_inner(error);
+	write_fast_map();
+	return ok;
+}
+
+bool apply_inner(std::string& error) {
+	// The tile's own clip wins; otherwise the main one, unless "Main video" is off (then nothing).
+	const std::string clip = !g_override.empty() ? g_override : (g_main_video ? g_current : std::string());
+	// Same folder while a clip plays: quick swap in ShellUI (fade to black, swap, fade in), no
+	// release wait: the folder stays mounted (the full stop took ~4 s per switch, test v11-4).
+	if (g_injected && g_enabled && !(g_game_pause && g_game_running) && !clip.empty() && exists(clip.c_str()) &&
+	    mount_base(clip) == g_mounted_folder &&
+	    (shellui_status().rfind("playing", 0) == 0 || shellui_status().rfind("starting", 0) == 0)) {
+		// "starting" too: ShellUI's own fast switch may be mid-swap (test v11-9: that moment sent us
+		// down the slow path, ~2.5 s of black).
+		const std::string shown = shown_path(clip);
+		write_text(kPathFile, "switch:" + shown + "\n");
+		log("apply: quick swap to %s", clip.c_str());
+		return true;
+	}
+	const bool want_video = g_enabled && !(g_game_pause && g_game_running) && !clip.empty() && exists(clip.c_str());
+	if (want_video && g_injected && mount_base(clip) == g_mounted_folder) {
+		const std::string st = shellui_status();
+		if (st.empty() || st.rfind("stopped", 0) == 0) {
+			write_text(kPathFile, shown_path(clip) + "\n"); // nothing to release first
+			log("apply: start %s (folder already mounted)", clip.c_str());
+			return true;
+		}
+	}
 	if (g_injected) {
 		write_text(kPathFile, "off\n");
 		if (!wait_shellui_stopped(8000)) {
@@ -370,13 +552,13 @@ bool apply_locked(std::string& error) {
 		log("apply: video off");
 		return true;
 	}
-	const std::string folder = folder_of(g_current);
+	const std::string folder = mount_base(clip);
 	if (folder != g_mounted_folder || !g_injected) {
 		mount_window_everywhere(folder); // also refreshes the sandboxes before a (re)injection
 	}
-	const std::string shown = std::string(kMountPoint) + "/" + name_of(g_current);
+	const std::string shown = shown_path(clip);
 	write_text(kPathFile, shown + "\n");
-	log("apply: %s (shown as %s)", g_current.c_str(), shown.c_str());
+	log("apply: %s (shown as %s)", clip.c_str(), shown.c_str());
 	return true;
 }
 
@@ -392,9 +574,9 @@ off_t file_size(const char* path) {
 // ~2 ms) until the system kills it. Detect that and let it run again.
 void unfreeze_if_stuck(pid_t pid) {
 	usleep(400 * 1000);
-	const off_t first = file_size(kShellUiLog);
+	const off_t first = file_size(kShellUiLog) + g_ui_bytes;
 	usleep(2600 * 1000); // the module waits 1.5 s, then logs ~4 lines/s
-	const off_t second = file_size(kShellUiLog);
+	const off_t second = file_size(kShellUiLog) + g_ui_bytes;
 	if (second > first) {
 		log("ShellUI is running (log %ld -> %ld bytes)", static_cast<long>(first), static_cast<long>(second));
 		return;
@@ -409,9 +591,38 @@ void unfreeze_if_stuck(pid_t pid) {
 		set_proc_authid(getpid(), old_authid);
 	}
 	usleep(1000 * 1000);
-	const off_t third = file_size(kShellUiLog);
+	const off_t third = file_size(kShellUiLog) + g_ui_bytes;
 	log("unfreeze: detach %d (errno %d), SIGCONT %d, log now %ld bytes (%s)", det, det_errno, cont,
 	    static_cast<long>(third), third > second ? "RUNNING again" : "still stuck");
+}
+
+// A just-started ShellUI is patched by kstuff once its trophy libraries are mapped; OnionHEN waits for
+// the same libraries before injecting. We injected at once: right after a ShellUI restart that froze
+// ShellUI every time (v1.1-rc3, "FROZEN after injection", then the crash guard). Wait the same way.
+void wait_shellui_ready(pid_t pid) {
+	bool waited = false;
+	for (const char* name : {"libSceNpTrophy.sprx", "libSceNpTrophy2.sprx"}) {
+		int i = 0;
+		for (; i < 60; ++i) { // max 30 s each, like kstuff
+			uint32_t handle = 0xffffffffu;
+			if (kernel_dynlib_handle(pid, name, &handle) == 0 && handle != 0xffffffffu) {
+				break;
+			}
+			if (kill(pid, 0) != 0) {
+				return; // gone; the caller notices
+			}
+			waited = true;
+			usleep(500 * 1000);
+		}
+		if (i == 60) {
+			log("ShellUI %d: %s still not loaded after 30 s, injecting anyway", static_cast<int>(pid), name);
+		} else if (i > 0) {
+			log("ShellUI %d: %s loaded after %d ms", static_cast<int>(pid), name, i * 500);
+		}
+	}
+	if (waited) {
+		sleep(3); // a fresh ShellUI: let kstuff finish with it
+	}
 }
 
 pid_t inject_shellui() {
@@ -428,7 +639,9 @@ pid_t inject_shellui() {
 		log("already injected in ShellUI pid %d", static_cast<int>(pid));
 		return pid;
 	}
+	wait_shellui_ready(pid);
 	unlink(kStatusFile);
+	ui_forget_status();
 	log("injecting into SceShellUI pid %d", static_cast<int>(pid));
 	if (!Inject_Toolbox(static_cast<int>(pid), liveshell_shellui_elf_start)) {
 		log("injection FAILED");
@@ -442,7 +655,13 @@ pid_t inject_shellui() {
 }
 
 void copy_shellui_log() {
-	const std::string text = read_text(kShellUiLog, 64 * 1024);
+	std::string text = read_text(kUiLogFile, 2 * 1024 * 1024);
+	if (text.size() > 64 * 1024) {
+		text.erase(0, text.size() - 64 * 1024); // the end matters
+	}
+	if (text.empty()) {
+		text = read_text(kShellUiLog, 64 * 1024);
+	}
 	if (text.empty()) {
 		return;
 	}
@@ -454,10 +673,83 @@ void copy_shellui_log() {
 
 // ---- stop port (tools/stop_liveshell.bat) ----------------------------------------------------
 
-void* stop_thread(void*) {
+// ---- rest mode -------------------------------------------------------------------------------
+// The system's power state (event flag "SceSystemStateMgrInfo", low 16 bits: 1000 working, 500 rest,
+// 300 going to rest), read the way OnionHEN does. Waking up: wait 1 s for the network, then every
+// listener reopens (net_epoch) - sockets from before rest are dead (user report: dead after waking).
+std::atomic<int>    g_net_epoch{0};
+std::atomic<bool>   g_sleeping{false}; // the PS5 is in (or going to) rest mode
+std::atomic<time_t> g_rest_seen{0};    // last time rest mode started or ended
+
+// Wake our own listeners: a blocked accept()/recv() returns and sees the new epoch (the window took
+// ~2 min to reopen after waking: accept's timeout did not fire, test v1.1-rc).
+void poke_ports() {
+	for (const int port : {kWebPort, kStopPort}) {
+		const int   s = socket(AF_INET, SOCK_STREAM, 0);
+		sockaddr_in a {};
+		a.sin_family      = AF_INET;
+		a.sin_port        = htons(static_cast<uint16_t>(port));
+		a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		if (s >= 0) {
+			if (connect(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
+				const char* poke = "poke\n";
+				(void)write(s, poke, strlen(poke));
+			}
+			close(s);
+		}
+	}
+	const int   u = socket(AF_INET, SOCK_DGRAM, 0);
+	sockaddr_in a {};
+	a.sin_family      = AF_INET;
+	a.sin_port        = htons(kUiPort);
+	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (u >= 0) {
+		(void)sendto(u, "P", 1, 0, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+		close(u);
+	}
+}
+
+void* power_thread(void*) {
+	intptr_t flag     = -1;
+	bool     sleeping = false;
+	while (g_running) {
+		usleep(200 * 1000);
+		if (flag < 0 && sceKernelOpenEventFlag(&flag, "SceSystemStateMgrInfo") < 0) {
+			flag = -1;
+			sleep(5);
+			continue;
+		}
+		uint64_t bits = 0;
+		if (sceKernelPollEventFlag(flag, UINT64_MAX, 2 /* OR */, &bits) < 0) {
+			sceKernelCloseEventFlag(flag);
+			flag = -1;
+			continue;
+		}
+		const unsigned state = static_cast<unsigned>(bits & 0xffff);
+		if (state == 500 || state == 300) {
+			if (!sleeping) {
+				log("rest: going to rest mode (%u)", state);
+				g_rest_seen = time(nullptr);
+			}
+			sleeping   = true;
+			g_sleeping = true;
+		} else if (state == 1000 && sleeping) {
+			sleeping    = false;
+			g_rest_seen = time(nullptr);
+			log("rest: awake again, reopening ports in 1 s");
+			sleep(1);
+			++g_net_epoch;
+			poke_ports();
+			g_sleeping = false; // the re-inject loop may go on now
+		}
+	}
+	return nullptr;
+}
+
+int open_stop_port() {
 	const int s = socket(AF_INET, SOCK_STREAM, 0);
 	if (s < 0) {
-		return nullptr;
+		return -1;
 	}
 	int on = 1;
 	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -468,10 +760,108 @@ void* stop_thread(void*) {
 	if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(s, 1) != 0) {
 		log("stop port %d unavailable (errno %d)", kStopPort, errno);
 		close(s);
-		return nullptr;
+		return -1;
 	}
+	timeval tv {1, 0}; // accept wakes up every second: rest mode / reopen checks
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	return s;
+}
+
+// Loading the ELF while LiveShell already runs: ask the running one to leave (handover above), so
+// this one gets the ports (they were "unavailable", and the status went to the old one, test v11-24).
+// This build, so a handover can tell old from new ("handover <build>").
+constexpr const char* kBuild = __DATE__ " " __TIME__;
+
+bool take_over_running() {
+	auto connect_stop = []() -> int {
+		const int   s = socket(AF_INET, SOCK_STREAM, 0);
+		sockaddr_in a {};
+		a.sin_family      = AF_INET;
+		a.sin_port        = htons(kStopPort);
+		a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		if (s >= 0 && connect(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
+			return s;
+		}
+		if (s >= 0) {
+			close(s);
+		}
+		return -1;
+	};
+	const int s = connect_stop();
+	if (s < 0) {
+		return false; // nothing running
+	}
+	const std::string hello = std::string("handover ") + kBuild + "\n";
+	(void)write(s, hello.data(), hello.size());
+	char          reply[16] = {};
+	timeval       tv {2, 0};
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	const ssize_t got = recv(s, reply, sizeof(reply) - 1, 0);
+	close(s);
+	if (got < 8 || memcmp(reply, "handover", 8) != 0) {
+		log("handover: the running LiveShell is another build: it stops normally (ShellUI restarts)");
+	}
+	for (int i = 0; i < 150; ++i) { // until its ports are free (max 15 s: a normal stop restarts ShellUI)
+		const int t = connect_stop();
+		if (t < 0) {
+			return true;
+		}
+		close(t);
+		usleep(100 * 1000);
+	}
+	return true;
+}
+
+void* stop_thread(void*) {
+	int s = -1, fails = 0, epoch = net_epoch(); // reopened after rest mode (see power_thread)
 	while (g_running) {
+		if (s >= 0 && epoch != net_epoch()) {
+			log("stop port: reopening after rest mode");
+			close(s);
+			s = -1;
+		}
+		if (s < 0) {
+			epoch = net_epoch();
+			s     = open_stop_port();
+			if (s < 0) {
+				sleep(2);
+				continue;
+			}
+			fails = 0;
+		}
 		const int c = accept(s, nullptr, nullptr);
+		if (c < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				continue; // the 1 s timeout
+			}
+			if (++fails >= 30) {
+				log("stop port broken (errno %d), reopening", errno);
+				close(s);
+				s = -1;
+			}
+			usleep(100 * 1000);
+			continue;
+		}
+		fails = 0;
+		// A new LiveShell sends "handover": leave quietly (no ShellUI restart, mounts stay) so it can
+		// take the ports. The stop tools send nothing -> after 0.3 s it is a normal stop.
+		timeval rt {0, 300 * 1000};
+		setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &rt, sizeof(rt));
+		char          hello[48] = {};
+		const ssize_t got       = recv(c, hello, sizeof(hello) - 1, 0);
+		// Only the same build leaves quietly: ShellUI keeps the module the old one injected, so a
+		// different build stops normally (ShellUI restarts, the new one injects its own module).
+		if (got >= 4 && memcmp(hello, "poke", 4) == 0) {
+			close(c); // our own wake-up nudge (poke_ports)
+			continue;
+		}
+		if (got >= 8 && memcmp(hello, "handover", 8) == 0 && strstr(hello, kBuild) != nullptr) {
+			const char* ok = "handover\n";
+			(void)write(c, ok, strlen(ok));
+			close(c);
+			log("handover: a new LiveShell takes over, leaving");
+			_exit(0);
+		}
 		if (c >= 0) {
 			const char* msg = "stopping\n";
 			(void)write(c, msg, strlen(msg));
@@ -573,7 +963,24 @@ std::vector<Video> list_videos() {
 		});
 		all.insert(all.end(), found.begin(), found.end());
 	};
+	// Game folders (named after a title id) inside a video folder: their clips are listed too.
+	auto scan_games = [&](const std::string& folder, const std::string& where) {
+		if (DIR* dir = opendir(folder.c_str())) {
+			std::vector<std::string> subs;
+			while (dirent* e = readdir(dir)) {
+				if (is_title_id(e->d_name)) {
+					subs.push_back(folder + "/" + e->d_name);
+				}
+			}
+			closedir(dir);
+			std::sort(subs.begin(), subs.end());
+			for (const std::string& s : subs) {
+				scan(s, where);
+			}
+		}
+	};
 	scan("/data/LiveShell/video", "Internal");
+	scan_games("/data/LiveShell/video", "Internal");
 	// USB: a folder called liveshell in any capitalisation (the drive's file system is case
 	// sensitive here), clips directly inside it and/or in a "video" subfolder.
 	auto subdir = [](const std::string& parent, const char* want) {
@@ -596,9 +1003,11 @@ std::vector<Video> list_videos() {
 			continue;
 		}
 		scan(root, where);
+		scan_games(root, where);
 		const std::string video = subdir(root, "video");
 		if (!video.empty()) {
 			scan(video, where);
+			scan_games(video, where);
 		}
 	}
 	return all;
@@ -633,11 +1042,14 @@ State get_state() {
 		st.enabled = g_enabled;
 		st.current = g_current;
 		st.dim     = g_dim;
+		st.volume  = g_volume;
 		st.blur    = g_blur;
 		for (int l = 0; l < 4; ++l) {
 			st.looks[l] = g_looks[l];
 		}
 		st.shuffle    = g_shuffle;
+		st.main_video = g_main_video;
+		st.game_videos = g_game_videos;
 		st.game_pause = g_game_pause;
 		st.menu_hide  = g_menu_hide;
 		st.parallax   = g_parallax;
@@ -656,8 +1068,12 @@ bool select_video(const std::string& path, std::string& error) {
 	std::lock_guard<std::mutex> lock(g_ctl);
 	g_current = path;
 	g_enabled = true;
-	save_config();
+	save_config(); // g_override stays: a highlighted game's own clip wins over the main video
 	return apply_locked(error);
+}
+
+int net_epoch() {
+	return g_net_epoch.load();
 }
 
 void set_dim(int percent) {
@@ -666,6 +1082,14 @@ void set_dim(int percent) {
 	save_config();
 	write_text(kDimFile, std::to_string(g_dim) + "\n");
 	log("dim: %d%%", g_dim);
+}
+
+void set_volume(int percent) {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	g_volume = std::max(0, std::min(100, percent));
+	save_config();
+	write_text(kVolumeFile, std::to_string(g_volume) + "\n");
+	log("volume: %d%%", g_volume);
 }
 
 void set_look(const std::string& key, int level) {
@@ -704,6 +1128,17 @@ bool set_option(const std::string& key, bool on, std::string& error) {
 	std::lock_guard<std::mutex> lock(g_ctl);
 	if (key == "shuffle") {
 		g_shuffle = on;
+	} else if (key == "gamevideos") {
+		g_game_videos = on;
+		save_config();
+		log("option gamevideos=%d", on ? 1 : 0);
+		g_focus_recheck = true; // the highlighted tile decides again
+		return !g_injected || apply_locked(error);
+	} else if (key == "mainvideo") {
+		g_main_video = on;
+		save_config();
+		log("option mainvideo=%d", on ? 1 : 0);
+		return !g_injected || apply_locked(error); // takes effect on the highlighted tile at once
 	} else if (key == "gamepause") {
 		g_game_pause = on;
 	} else if (key == "parallax") {
@@ -743,6 +1178,37 @@ bool delete_video(const std::string& path, std::string& error) {
 	const bool        ok    = unlink(path.c_str()) == 0;
 	unlink(cover.c_str());
 	log("delete %s: %s", path.c_str(), ok ? "done" : strerror(errno));
+	if (ok) {
+		// Games that used it go back to the main video (the Library showed the deleted name).
+		const std::string text = read_text("/data/LiveShell/games.txt", 64 * 1024);
+		std::string       out;
+		int               freed = 0;
+		size_t            pos   = 0;
+		while (pos < text.size()) {
+			const size_t      end  = text.find('\n', pos);
+			const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+			const size_t      eq   = line.find('=');
+			if (eq != std::string::npos && line.substr(eq + 1) == path) {
+				++freed;
+			} else if (!line.empty()) {
+				out += line + "\n";
+			}
+			if (end == std::string::npos) {
+				break;
+			}
+			pos = end + 1;
+		}
+		if (freed > 0) {
+			write_text("/data/LiveShell/games.txt", out);
+			write_text("/system_tmp/liveshell/games.txt", out);
+			if (g_override == path) {
+				g_override.clear();
+			}
+			g_focus_recheck = true;
+			write_fast_map();
+			log("delete: %d game(s) used it, back to the main video", freed);
+		}
+	}
 	if (!ok) {
 		error = "The file could not be deleted";
 	}
@@ -753,12 +1219,16 @@ bool reset_settings(std::string& error) {
 	std::lock_guard<std::mutex> lock(g_ctl);
 	g_enabled    = true;
 	g_dim        = 25;
+	g_volume     = 100;
+	write_text(kVolumeFile, "100\n");
 	g_blur       = 0;
 	for (int& v : g_looks) {
 		v = 0;
 	}
 	write_looks();
 	g_shuffle    = false;
+	g_main_video = true;
+	g_game_videos = true;
 	g_game_pause = true;
 	g_menu_hide  = true;
 	g_parallax   = false;
@@ -779,6 +1249,286 @@ void request_shutdown() {
 	log("shutdown requested from the window");
 	g_stop_requested = true;
 	g_running        = false;
+}
+
+// Per-game backgrounds: /data/LiveShell/games.txt, one "TITLEID=/path/clip.mp4" per line.
+constexpr const char* kGamesFile = "/data/LiveShell/games.txt";
+
+std::string games_text() {
+	return read_text(kGamesFile, 64 * 1024);
+}
+
+void set_game_background(const std::string& tid, const std::string& path) {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	std::string out;
+	const std::string text = read_text(kGamesFile, 64 * 1024);
+	size_t      pos  = 0;
+	while (pos < text.size()) {
+		const size_t      end  = text.find('\n', pos);
+		const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+		if (!line.empty() && line.rfind(tid + "=", 0) != 0) {
+			out += line + "\n";
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		pos = end + 1;
+	}
+	if (!path.empty()) {
+		out += tid + "=" + path + "\n";
+	}
+	write_text(kGamesFile, out);
+	write_text("/system_tmp/liveshell/games.txt", out);
+	write_fast_map();
+	g_focus_recheck = true;
+	log("game background %s -> %s", tid.c_str(), path.empty() ? "main wallpaper" : path.c_str());
+}
+
+// ShellUI's fast switch (test v11-8): it picks the highlighted game's clip itself from this map
+// instead of waiting for our round trip. "*=<main clip>", then "TITLEID=<clip>", as ShellUI sees them;
+// "-" = needs a remount first (we do that one). Caller holds g_ctl.
+// Does the clip have a sound track? An mp4 'hdlr' box of type 'soun' inside 'moov'. Cached by
+// size + date; unreadable = assume sound (the old behaviour). Caller holds g_ctl.
+bool clip_has_audio(const std::string& path) {
+	static std::map<std::string, std::pair<long long, bool>> cache;
+	struct stat st {};
+	if (stat(path.c_str(), &st) != 0) {
+		return true;
+	}
+	const long long stamp = static_cast<long long>(st.st_size) * 31 + static_cast<long long>(st.st_mtime);
+	auto            hit   = cache.find(path);
+	if (hit != cache.end() && hit->second.first == stamp) {
+		return hit->second.second;
+	}
+	bool      audio = true;
+	const int fd    = open(path.c_str(), O_RDONLY);
+	if (fd >= 0) {
+		long long off = 0;
+		unsigned char h[16];
+		while (off + 8 <= static_cast<long long>(st.st_size) && pread(fd, h, 8, off) == 8) {
+			long long size = (static_cast<long long>(h[0]) << 24) | (h[1] << 16) | (h[2] << 8) | h[3];
+			long long head = 8;
+			if (size == 1) {
+				if (pread(fd, h + 8, 8, off + 8) != 8) {
+					break;
+				}
+				size = 0;
+				for (int i = 8; i < 16; ++i) {
+					size = (size << 8) | h[i];
+				}
+				head = 16;
+			} else if (size == 0) {
+				size = static_cast<long long>(st.st_size) - off;
+			}
+			if (size < head) {
+				break;
+			}
+			if (memcmp(h + 4, "moov", 4) == 0) {
+				const size_t n = static_cast<size_t>(std::min<long long>(size, 8 * 1024 * 1024));
+				std::string  moov(n, '\0');
+				if (pread(fd, &moov[0], n, off) == static_cast<ssize_t>(n)) {
+					audio = false;
+					for (size_t at = moov.find("hdlr"); at != std::string::npos; at = moov.find("hdlr", at + 4)) {
+						if (at + 16 <= n && moov.compare(at + 12, 4, "soun") == 0) {
+							audio = true;
+							break;
+						}
+					}
+				}
+				break;
+			}
+			off += size;
+		}
+		close(fd);
+	}
+	cache[path] = {stamp, audio};
+	return audio;
+}
+
+void write_fast_map() {
+	auto shown = [](const std::string& clip) -> std::string {
+		if (clip.empty() || g_mounted_folder.empty() || mount_base(clip) != g_mounted_folder || !exists(clip.c_str())) {
+			return "-";
+		}
+		return shown_path(clip);
+	};
+	std::string       out  = "*=" + (g_main_video ? shown(g_current) : std::string("off")) + "\n";
+	const std::string text = g_game_videos ? read_text(kGamesFile, 64 * 1024) : std::string();
+	size_t            pos  = 0;
+	while (pos < text.size()) {
+		const size_t      end  = text.find('\n', pos);
+		const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+		const size_t      eq   = line.find('=');
+		if (eq != std::string::npos && eq > 0) {
+			out += line.substr(0, eq) + "=" + shown(line.substr(eq + 1)) + "\n";
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		pos = end + 1;
+	}
+	// "!<clip>" = no sound track: ShellUI lets the PS5's own music (a game's theme) play with it.
+	for (const Video& v : list_videos()) {
+		if (!g_mounted_folder.empty() && mount_base(v.path) == g_mounted_folder && !clip_has_audio(v.path)) {
+			out += "!" + shown_path(v.path) + "\n";
+		}
+	}
+	write_text("/system_tmp/liveshell/fast.txt", out);
+}
+
+// ShellUI cannot read /data: it gets a copy of games.txt to label the menu item (Set / Remove).
+void mirror_games() {
+	write_text("/system_tmp/liveshell/games.txt", read_text(kGamesFile, 64 * 1024));
+}
+
+
+// ---- installed games (Games tab) ----------------------------------------------------------------
+
+// PS4 titles keep their name in param.sfo (binary); PS5 titles in param.json.
+std::string sfo_title(const std::string& path) {
+	const std::string d = read_text(path.c_str(), 64 * 1024);
+	if (d.size() < 20 || d.compare(0, 4, std::string("\0PSF", 4)) != 0) {
+		return {};
+	}
+	auto u16 = [&](size_t o) { return static_cast<uint32_t>(static_cast<uint8_t>(d[o]) | static_cast<uint8_t>(d[o + 1]) << 8); };
+	auto u32 = [&](size_t o) { return u16(o) | u16(o + 2) << 16; };
+	const uint32_t keys = u32(8), data = u32(12), count = u32(16);
+	for (uint32_t i = 0; i < count && 20 + i * 16 + 16 <= d.size(); ++i) {
+		const size_t   e   = 20 + i * 16;
+		const uint32_t ko  = keys + u16(e), len = u32(e + 4), dof = data + u32(e + 12);
+		if (ko < d.size() && strcmp(d.c_str() + ko, "TITLE") == 0 && dof + len <= d.size()) {
+			return std::string(d.c_str() + dof);
+		}
+	}
+	return {};
+}
+
+std::string json_title(const std::string& path) {
+	const std::string d = read_text(path.c_str(), 256 * 1024);
+	// Prefer en-US, else the first titleName.
+	size_t at = d.find("\"en-US\"");
+	at        = d.find("\"titleName\"", at == std::string::npos ? 0 : at);
+	if (at == std::string::npos) {
+		at = d.find("\"titleName\"");
+	}
+	if (at == std::string::npos) {
+		return {};
+	}
+	const size_t q1 = d.find('"', d.find(':', at) + 1);
+	const size_t q2 = q1 == std::string::npos ? q1 : d.find('"', q1 + 1);
+	return q2 == std::string::npos ? std::string() : d.substr(q1 + 1, q2 - q1 - 1);
+}
+
+bool is_title_id(const char* n) {
+	if (strlen(n) != 9) {
+		return false;
+	}
+	for (int i = 0; i < 4; ++i) {
+		if (!isupper(static_cast<unsigned char>(n[i]))) {
+			return false;
+		}
+	}
+	for (int i = 4; i < 9; ++i) {
+		if (!isdigit(static_cast<unsigned char>(n[i]))) {
+			return false;
+		}
+	}
+	return strncmp(n, "NPXS", 4) != 0 && strcmp(n, "LVSH00001") != 0;
+}
+
+std::vector<Game> list_games() {
+	std::vector<Game> out;
+	DIR* dir = opendir("/user/appmeta");
+	if (dir == nullptr) {
+		return out;
+	}
+	while (dirent* e = readdir(dir)) {
+		if (!is_title_id(e->d_name)) {
+			continue;
+		}
+		const std::string base = std::string("/user/appmeta/") + e->d_name;
+		std::string       name = json_title(base + "/param.json");
+		if (name.empty()) {
+			name = sfo_title(base + "/param.sfo");
+		}
+		if (name.empty()) {
+			continue; // no title: not a game we can show (e.g. tools, leftovers)
+		}
+		out.push_back({e->d_name, name});
+	}
+	closedir(dir);
+	std::sort(out.begin(), out.end(), [](const Game& a, const Game& b) { return strcasecmp(a.name.c_str(), b.name.c_str()) < 0; });
+	return out;
+}
+
+// ---- per-game playback: the highlighted game's clip -----------------------------------------
+// ShellUI writes the highlighted title id to focus_game.txt ("" for non-game tiles). After ~1 s on
+// the same tile, play that game's clip (games.txt) instead of the main one; elsewhere, the main one.
+// What PLAYS for a tile: its saved clip, unless "Videos per game" is off (then the main one).
+std::string game_clip(const std::string& tid) {
+	return g_game_videos ? saved_game_clip(tid) : std::string();
+}
+
+// The clip saved for a tile in games.txt (the Library list shows it even when switched off).
+std::string saved_game_clip(const std::string& tid) {
+	if (tid.empty()) {
+		return {};
+	}
+	const std::string text = read_text("/data/LiveShell/games.txt", 64 * 1024);
+	const size_t      at   = text.find(tid + "=");
+	if (at == std::string::npos || (at > 0 && text[at - 1] != '\n')) {
+		return {};
+	}
+	const size_t end = text.find('\n', at);
+	return text.substr(at + tid.size() + 1, end == std::string::npos ? std::string::npos : end - at - tid.size() - 1);
+}
+
+void* focus_thread(void*) {
+	std::string seen, pending;
+	long        changed_ms = 0;
+	auto        now_ms     = [] {
+        timespec ts {};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return static_cast<long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+	};
+	while (g_running) {
+		usleep(200 * 1000);
+		const std::string tid = shellui_focus();
+		if (tid != seen) {
+			seen       = tid;
+			changed_ms = now_ms();
+			continue;
+		}
+		if (g_focus_recheck) {
+			g_focus_recheck = false;
+			pending         = "?"; // games.txt changed: decide again for the same tile
+		}
+		if (now_ms() - changed_ms < 250 || tid == pending) {
+			continue;
+		}
+		std::string clip = game_clip(tid);
+		if (!clip.empty() && !exists(clip.c_str())) {
+			clip.clear();
+		}
+		std::lock_guard<std::mutex> lock(g_ctl);
+		if (!g_injected || !g_enabled || g_game_running) {
+			continue; // not now: decide again once we can switch (pending unchanged)
+		}
+		if (tid != pending) {
+			write_text("/data/LiveShell/last_game.txt", tid + "\n"); // the PS5 comes back to this tile
+		}
+		pending = tid;
+		if (clip == g_override) {
+			continue;
+		}
+		g_override = clip;
+		log("per-game: %s -> %s", tid.empty() ? "(no game)" : tid.c_str(), clip.empty() ? "main wallpaper" : clip.c_str());
+		std::string error;
+		if (!apply_locked(error)) {
+			log("per-game: %s", error.c_str());
+		}
+	}
+	return nullptr;
 }
 
 // A game (not a system app, not our own window) is running: no video, the game gets the decoder.
@@ -821,6 +1571,9 @@ int main() {
 	unlink("/system_tmp/liveshell/video_trying");
 	g_log = open(kLogFile, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 	log("LiveShell starting");
+	if (take_over_running()) {
+		log("handover: took over from the LiveShell that was running");
+	}
 	// The injector's own steps (attach / load / stager / detach) go here.
 	unlink("/data/LiveShell/inject.log");
 	onion_log_configure("liveshell", "/data/LiveShell/inject.log");
@@ -853,6 +1606,16 @@ int main() {
 			save_config();
 			log("shuffle: %s", g_current.c_str());
 		}
+		// Start with the clip of the game the home screen will highlight: the PS5 comes back to the
+		// last focused tile, which we noted (focus info only arrives once the user moves).
+		const std::string last = first_line(read_text("/data/LiveShell/last_game.txt", 64));
+		const std::string lclip = game_clip(last);
+		if (!lclip.empty() && exists(lclip.c_str())) {
+			g_override = lclip;
+			write_text("/system_tmp/liveshell/focus_game.txt", last + "\n");
+			ui_set_focus(last);
+			log("start: last highlighted game %s -> %s", last.c_str(), lclip.c_str());
+		}
 		std::string error;
 		apply_locked(error); // not injected yet: just mounts + writes the path file
 	}
@@ -860,6 +1623,8 @@ int main() {
 		notify_plain("No video found. Put an .mp4 in /data/LiveShell/video or in a liveshell folder on a USB drive.");
 	}
 
+	start_thread(ui_thread); // before the injection: ShellUI talks to us from its first line
+	start_thread(power_thread);
 	start_thread(stop_thread);
 	start_web_server();
 
@@ -872,7 +1637,9 @@ int main() {
 		g_injected = last_pid > 0;
 	}
 	start_thread(after_start_thread);
+	mirror_games();
 	start_thread(game_thread);
+	start_thread(focus_thread);
 
 	// Re-inject after ShellUI restarts. A restart soon after an injection means our module crashed
 	// it: stop for good instead of crash-looping the console.
@@ -882,7 +1649,7 @@ int main() {
 		if (!g_running) {
 			break;
 		}
-		const pid_t current = onion_find_pid("SceShellUI");
+		pid_t current = onion_find_pid("SceShellUI");
 		if (current <= 0 || current == last_pid) {
 			continue;
 		}
@@ -890,7 +1657,25 @@ int main() {
 		log("ShellUI restarted: was %d, now %d (%ld s after injection)", static_cast<int>(last_pid),
 		    static_cast<int>(current), alive);
 		copy_shellui_log();
-		if (alive < kCrashWindowSec) {
+		// Rest mode restarts ShellUI itself (it went down 5 s after "going to rest", and our crash
+		// guard stopped LiveShell for good, test v1.1-rc2). Not a crash: wait until the PS5 is awake,
+		// then inject into the new ShellUI (OnionHEN re-injects after resume the same way).
+		const bool by_rest = g_sleeping || time(nullptr) - g_rest_seen.load() < 60;
+		if (by_rest) {
+			log("ShellUI restarted by rest mode: injecting again once the PS5 is awake");
+			while (g_running && g_sleeping) {
+				sleep(1);
+			}
+			if (!g_running) {
+				break;
+			}
+			sleep(10); // as OnionHEN after a resume (resume_reinject_delay_seconds=10)
+			const pid_t now = onion_find_pid("SceShellUI");
+			if (now > 0) {
+				current = now;
+			}
+		}
+		if (!by_rest && alive < kCrashWindowSec) {
 			log("ShellUI died %ld s after injection: treating it as a crash, not re-injecting", alive);
 			notify("LiveShell Engine stopped: the home screen crashed. Log: /data/LiveShell/liveshell.log");
 			break;
@@ -939,6 +1724,7 @@ int main() {
 	unmount_window_everywhere();
 	unlink(kOurMarker);
 	unlink(kStatusFile);
+	ui_forget_status();
 	log("LiveShell stopped");
 	notify("LiveShell Engine stopped.");
 	return 0;

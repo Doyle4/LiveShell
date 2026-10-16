@@ -44,5 +44,5 @@ target_include_directories(liveshell PRIVATE
 	"${PROJECT_ROOT}/libonion_platform/include"
 	"${PROJECT_ROOT}/include")
 target_link_directories(liveshell PUBLIC "${ONIONHEN_PS5_STUB_DIR}")
-target_link_libraries(liveshell PUBLIC NineS onion_proc onion_platform onion_elfldr SceNotification SceSystemService kernel_sys)
+target_link_libraries(liveshell PUBLIC NineS onion_proc onion_platform onion_elfldr SceNotification SceSystemService SceUserService kernel_sys)
 onion_strip_debug(liveshell)

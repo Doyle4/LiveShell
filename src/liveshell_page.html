@@ -4,82 +4,98 @@
 <title>LiveShell Engine</title>
 <link rel="icon" href="/icon.png">
 <style>
-:root{--card:#151515;--card2:#1c1c1c;--chip:#232323;--line:#2e2e2e;--text:#fff;--dim:#8a8a8a;--faint:#4a4a4a}
+:root{--card:#151515;--card2:#1e1e1e;--chip:#262626;--line:#2e2e2e;--text:#fff;--dim:#8f8f8f;--faint:#4a4a4a}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{color:var(--text);font-family:"SST","SST Pro","Helvetica Neue",Helvetica,Arial,sans-serif;line-height:1.3}
 /* Solid black: the see-through frosted look came out grey on the PS5. */
 html,body{background:#000}
-body{position:relative;padding:0 44px 84px;min-height:100vh}
+body{position:relative;padding:0 36px 72px;min-height:100vh;overflow-x:hidden}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left}
 button:focus{outline:none}
 
 /* controller keys, drawn the same everywhere */
-.k{display:inline-block;min-width:26px;text-align:center;font-style:normal;font-size:11px;font-weight:700;letter-spacing:.3px;color:#cfcfcf;border:1px solid #5a5a5a;border-radius:6px;padding:2px 6px}
+.k{display:inline-block;min-width:28px;text-align:center;font-style:normal;font-size:12px;font-weight:700;letter-spacing:.3px;color:#cfcfcf;border:1px solid #5a5a5a;border-radius:6px;padding:3px 7px}
 
-/* top bar, like Overdrive: tabs left, name centred, switch right */
-.top{position:relative;display:flex;align-items:center;height:68px}
-.tabs{display:flex;align-items:center;gap:6px}
-.tabs .k{margin:0 8px}
-.tabs .k:first-child{margin-left:0}
-.tab{display:flex;align-items:center;gap:8px;padding:7px 16px 7px 13px;border-radius:999px;color:var(--dim);font-size:15px;transition:background .15s,color .15s}
-.tab svg{flex:none;pointer-events:none}
-.tab span{pointer-events:none}
-.tab.on{background:var(--text);color:#000;font-weight:600}
-.brand{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:9px;font-size:19px;font-weight:600;letter-spacing:-.3px}
-.brand img{width:26px;height:26px;border-radius:6px}
+/* top bar: name left, big tabs in the middle, wallpaper state right */
+.top{display:flex;align-items:center;gap:20px;height:88px}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:600;letter-spacing:-.3px;white-space:nowrap}
+.brand img{width:34px;height:34px;border-radius:8px}
 .brand small{font-size:12px;font-weight:400;color:var(--dim)}
-.live{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
-.live .l1{display:flex;align-items:center;gap:8px;font-size:15px;color:var(--text)}
+.tabs{display:flex;align-items:center;gap:4px;margin:0 auto;padding:5px 8px;border-radius:999px;background:var(--card)}
+.tabs .k{margin:0 6px}
+.tab{display:flex;align-items:center;gap:10px;padding:11px 22px 11px 18px;border-radius:999px;color:#b8b8b8;font-size:18px;font-weight:500;white-space:nowrap;transition:background .15s,color .15s}
+.tab svg{width:20px;height:20px;flex:none;pointer-events:none}
+.tab span{pointer-events:none}
+.tab.on{background:var(--text);color:#000;font-weight:700}
+.tab:focus{box-shadow:0 0 0 2px #000,0 0 0 4px var(--text)}
+.live{display:flex;flex-direction:column;align-items:flex-end;gap:3px;white-space:nowrap}
+.live .l1{display:flex;align-items:center;gap:8px;font-size:15px}
 .live .l2{font-size:12px;color:var(--dim)}
 .live .l2 b{color:#cfcfcf;font-weight:600}
-.sw{width:38px;height:22px;border-radius:11px;background:var(--chip);box-shadow:inset 0 0 0 1px var(--line);position:relative;transition:background .2s}
-.sw:after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--dim);transition:transform .2s,background .2s}
-.tab:focus,.seg:focus{box-shadow:0 0 0 2px var(--text)}
+.sw{flex:none;width:40px;height:23px;border-radius:12px;background:var(--chip);box-shadow:inset 0 0 0 1px var(--line);position:relative;transition:background .2s}
+.sw:after{content:"";position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:var(--dim);transition:transform .2s,background .2s}
 
-h2{display:flex;align-items:baseline;gap:8px;font-size:19px;font-weight:600;margin:20px 0 12px}
-h2 span{font-size:15px;color:var(--dim);font-weight:400}
-/* two columns: banner + list on the left, the "Look" panel on the right */
-.cols{display:flex;align-items:flex-start;gap:28px}
+h2{display:flex;align-items:baseline;gap:10px;font-size:19px;font-weight:600;margin:18px 0 10px}
+h2 span{font-size:14px;color:var(--dim);font-weight:400}
+/* two columns: banner + list on the left, the settings panel on the right */
+.cols{display:flex;align-items:flex-start;gap:24px}
 .left{flex:1;min-width:0}
-.side{flex:none;width:340px;position:sticky;top:12px;max-height:calc(100vh - 90px);overflow:auto}
-.look{background:var(--card);border-radius:14px;padding:18px 18px 20px}
-.look h3{font-size:16px;font-weight:600;margin:0 0 4px}
-.look p{font-size:13px;color:var(--dim);margin-bottom:12px}
-.look .grp+.grp{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
-.segs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.seg{padding:12px 0;border-radius:10px;font-size:15px;font-weight:600;text-align:center;color:var(--dim);background:var(--chip)}
+.side{flex:none;width:320px;position:sticky;top:10px;max-height:calc(100vh - 84px);overflow:auto}
+
+/* right panel: short sections, everything visible at once (scroll only as a fallback) */
+.look{background:var(--card);border-radius:14px;padding:12px 16px 16px}
+.look h4{font-size:12px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);margin:4px 0 8px}
+.sec+.sec{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.ctl+.ctl{margin-top:10px}
+.ctl h3{font-size:15px;font-weight:600;margin-bottom:6px}
+.note{font-size:12px;color:var(--dim);margin-top:7px}
+.segs{display:flex;gap:3px;padding:3px;border-radius:10px;background:var(--chip)}
+.seg{flex:1;padding:8px 0;border-radius:8px;font-size:13px;font-weight:600;text-align:center;color:#b0b0b0;white-space:nowrap}
 .seg.on{background:var(--text);color:#000}
-.row{display:flex;align-items:center;gap:14px;width:100%;border-radius:10px;padding:2px 0}
+.seg:focus{box-shadow:0 0 0 2px var(--text)}
+.row{display:flex;align-items:center;gap:12px;width:100%;border-radius:10px;padding:5px 8px;margin:0 -8px;width:calc(100% + 16px)}
+.row+.row{margin-top:4px}
 .row div{flex:1;min-width:0}
-.row p{margin-bottom:0}
-.row:focus{box-shadow:0 0 0 2px var(--text);padding:6px 8px;margin:-4px -8px;width:calc(100% + 16px)}
+.row h3{font-size:15px;font-weight:600}
+.row p{font-size:12px;color:var(--dim);margin-top:2px}
+.row:focus{box-shadow:0 0 0 2px var(--text)}
 .row.on .sw{background:var(--text)}
-.row.on .sw:after{transform:translateX(16px);background:#000}
+.row.on .sw:after{transform:translateX(17px);background:#000}
 
 /* playing now: the clip itself, live */
-.now{position:relative;display:flex;align-items:flex-end;width:100%;aspect-ratio:21/8;min-height:200px;border-radius:12px;overflow:hidden;background:var(--card)}
+.now{position:relative;display:flex;align-items:flex-end;width:100%;height:170px;border-radius:12px;overflow:hidden;background:var(--card)}
 .now video{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover}
 .shade{position:absolute;left:0;top:0;width:100%;height:100%;background:#000;opacity:.25;transition:opacity .25s}
-.now:after{content:"";position:absolute;left:0;right:0;bottom:0;height:65%;background:linear-gradient(to top,rgba(0,0,0,.88),rgba(0,0,0,0))}
-.cap{position:relative;z-index:1;padding:0 22px 18px;min-width:0;width:100%}
-.state{display:flex;align-items:center;gap:8px;font-size:13px;color:#cfcfcf;margin-bottom:3px}
+.now:after{content:"";position:absolute;left:0;right:0;bottom:0;height:75%;background:linear-gradient(to top,rgba(0,0,0,.9),rgba(0,0,0,0))}
+.cap{position:relative;z-index:1;padding:0 20px 14px;min-width:0;width:100%}
+.state{display:flex;align-items:center;gap:8px;font-size:13px;color:#cfcfcf;margin-bottom:2px}
+.state b{font-weight:700;color:var(--text);letter-spacing:.8px;text-transform:uppercase;font-size:11px}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}
 .dot.live{background:var(--text);animation:breathe 2.4s ease-in-out infinite}
 @keyframes breathe{50%{opacity:.3}}
-.title{font-size:30px;font-weight:700;letter-spacing:-.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.title{font-size:25px;font-weight:700;letter-spacing:-.4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* video list: details view, small still on the left */
-.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+/* lists: compact rows, like a details view */
+.list{display:flex;flex-direction:column;gap:5px}
+.list.two{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:6px}
+.lhead{display:flex;align-items:center;gap:14px;padding:0 76px 6px 18px;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+.lhead .nm{flex:1}
 .item{position:relative}
-.main{position:relative;display:flex;flex-direction:column;justify-content:flex-end;width:100%;height:150px;padding:16px 18px;border-radius:14px;background:var(--card);overflow:hidden;transition:transform .15s,background .15s}
-.main:focus{transform:translateY(-2px);box-shadow:0 0 0 3px var(--text)}
-.main .art{position:absolute;right:-6px;top:-28px;font-size:150px;font-weight:800;line-height:1;letter-spacing:-6px;color:rgba(255,255,255,.06);pointer-events:none}
+.main{display:flex;align-items:center;gap:14px;width:100%;min-height:58px;padding:8px 14px 8px 18px;border-radius:10px;background:var(--card);transition:background .15s}
+.vid .main{padding-right:64px}
+.main:focus{box-shadow:0 0 0 3px var(--text)}
 .main.on{background:var(--text);color:#000}
-.main.on .art{color:rgba(0,0,0,.08)}
-.main.on .sub{color:#555}
-.badge{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700}
-.badge i{width:7px;height:7px;border-radius:50%;background:#000;animation:breathe 2.4s ease-in-out infinite}
-.del{position:absolute;right:10px;top:10px;display:flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:32px;padding:0 8px;border-radius:999px;color:var(--dim);background:rgba(0,0,0,.35);font-size:13px}
+.gico{flex:none;width:46px;height:46px;border-radius:9px;object-fit:cover;background:var(--chip)}
+.info{flex:1;min-width:0}
+.name{font-size:16px;font-weight:600;letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{margin-top:3px;display:flex;gap:10px;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub span{overflow:hidden;text-overflow:ellipsis}
+.main.on .sub,.main.on .col{color:#555}
+.col{flex:none;width:84px;font-size:13px;color:var(--dim);text-align:right;white-space:nowrap}
+.tag{flex:none;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;background:var(--chip);color:#d0d0d0;white-space:nowrap}
+.main.on .tag{background:#000;color:#fff}
+.tag i{width:7px;height:7px;border-radius:50%;background:currentColor;animation:breathe 2.4s ease-in-out infinite}
+.del{position:absolute;right:10px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;gap:6px;height:34px;min-width:34px;padding:0 9px;border-radius:999px;color:var(--dim);background:rgba(255,255,255,.06);font-size:13px}
 .main.on+.del{color:#333;background:rgba(0,0,0,.08)}
 .del:focus{box-shadow:0 0 0 2px var(--text);color:var(--text)}
 .del.armed{background:var(--text);color:#000;font-weight:600}
@@ -87,89 +103,112 @@ h2 span{font-size:15px;color:var(--dim);font-weight:400}
 
 /* settings view */
 .opts{display:flex;flex-direction:column;gap:6px}
-.opt{display:flex;align-items:center;gap:20px;width:100%;padding:16px 18px;border-radius:12px;background:var(--card)}
+.opt{display:flex;align-items:center;gap:20px;width:100%;padding:14px 18px;border-radius:12px;background:var(--card)}
 .opt:focus{background:var(--card2);box-shadow:0 0 0 2px var(--text)}
 .opt div{flex:1;min-width:0}
 .opt b{display:block;font-size:16px;font-weight:600}
 .opt div span{display:block;margin-top:3px;font-size:13px;color:var(--dim)}
 .opt.on .sw{background:var(--text)}
-.opt.on .sw:after{transform:translateX(16px);background:#000}
-.opt.soon{opacity:.5}
-.about{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:12px;background:var(--card);font-size:14px;color:var(--dim)}
-.about img{width:48px;height:48px;border-radius:10px}
+.opt.on .sw:after{transform:translateX(17px);background:#000}
+.about{display:flex;align-items:center;gap:16px;padding:14px 18px;border-radius:12px;background:var(--card);font-size:14px;color:var(--dim)}
+.about img{width:46px;height:46px;border-radius:10px}
 .about b{display:block;color:var(--text);font-size:16px;margin-bottom:2px}
 .about.remote b{font-size:22px;letter-spacing:-.3px;margin-bottom:6px}
 .btns{display:flex;gap:10px;margin-top:12px}
 .reset{padding:10px 20px;border-radius:999px;border:1px solid #5a5a5a;font-size:14px}
 .reset:focus{box-shadow:0 0 0 2px var(--text)}
 .reset.armed{background:var(--text);color:#000;font-weight:600;border-color:var(--text)}
-.info{position:relative;min-width:0}
-.name{font-size:18px;font-weight:700;letter-spacing:-.2px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.sub{margin-top:6px;display:flex;gap:12px;font-size:13px;color:var(--dim)}
 
-.empty{max-width:60ch;background:var(--card);border-radius:12px;padding:22px 24px;font-size:15px;color:var(--dim)}
+.empty{max-width:60ch;background:var(--card);border-radius:12px;padding:20px 22px;font-size:15px;color:var(--dim)}
 .empty b{display:block;color:var(--text);font-size:17px;margin-bottom:6px}
 .empty code{color:var(--text);font-family:inherit;font-weight:600}
 
-.hints{position:fixed;right:44px;bottom:14px;display:flex;align-items:center;gap:22px;font-size:13px;color:#bdbdbd;background:rgba(0,0,0,.55);padding:7px 16px;border-radius:999px}
+.hints{position:fixed;right:36px;bottom:12px;display:flex;align-items:center;gap:22px;font-size:13px;color:#bdbdbd;background:rgba(0,0,0,.6);padding:7px 16px;border-radius:999px}
 .hints span{display:flex;align-items:center;gap:8px}
 .hints .pair{display:flex;gap:4px}
-.toast{position:fixed;left:50%;bottom:56px;transform:translateX(-50%);background:var(--text);color:#000;font-weight:600;padding:10px 22px;border-radius:999px;font-size:14px;display:none}
-@media (max-width:1000px){.cols{flex-direction:column}.side{width:100%;position:static}}
-@media (max-width:760px){body{padding:0 16px 84px}.brand{position:static;transform:none;margin-left:10px}.tabs .k{display:none}.hints{display:none}}
-@media (prefers-reduced-motion:reduce){.dot.live{animation:none}.item,.sw,.sw:after,.shade{transition:none}}
+.modal{position:fixed;left:0;top:0;right:0;bottom:0;z-index:50;background:rgba(0,0,0,.86);display:flex;align-items:center;justify-content:center}
+.sheet{width:92%;max-width:1100px;max-height:86vh;overflow:auto;background:#0b0b0b;border-radius:16px;padding:20px 22px 22px;box-shadow:0 0 0 1px var(--line)}
+.sheet h2{margin-top:0}
+.sheet .hint{color:var(--dim);font-size:14px;margin:-4px 0 14px}
+.sheet .list{margin-bottom:14px}
+.ghint{color:var(--dim);font-size:14px;margin:-4px 0 12px}
+.toast{position:fixed;left:50%;bottom:56px;transform:translateX(-50%);background:var(--text);color:#000;font-weight:600;padding:10px 22px;border-radius:999px;font-size:14px;display:none;z-index:60}
+@media (max-width:1300px){.brand .bn,.live .l2{display:none}.tab{padding:10px 18px 10px 15px;font-size:17px}}
+@media (max-width:1100px){.side{width:290px}.col.loc,.lhead .loc{display:none}}
+@media (max-width:900px){.cols{flex-direction:column}.side{width:100%;position:static;max-height:none}.tab span{display:none}.tab{padding:11px 14px}}
+@media (max-width:760px){body{padding:0 16px 84px}.tabs .k{display:none}.hints{display:none}}
+@media (prefers-reduced-motion:reduce){.dot.live,.tag i{animation:none}.sw,.sw:after,.shade{transition:none}}
 </style></head><body>
 <div class="top">
- <div class="tabs" id="tabs"><em class="k">L1</em><button class="tab on" data-t="all"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span>All</span></button><button class="tab" data-t="Internal"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="8" r="1.1" fill="currentColor"/><path d="M4 8h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Internal</span></button><button class="tab" data-t="USB"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="4.5" y="6" width="7" height="8.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 6V1.5h4V6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 3.5h0M9 3.5h0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>USB</span></button><button class="tab" data-t="settings"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.5l1.3 1.8 2.2-.3.5 2.2 2 1-.9 2 .9 2-2 1-.5 2.2-2.2-.3L8 14.5l-1.3-1.8-2.2.3-.5-2.2-2-1 .9-2-.9-2 2-1 .5-2.2 2.2.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span>Settings</span></button><em class="k">R1</em></div>
- <div class="brand"><img src="/icon.png" alt="">LiveShell Engine<small>v1.0</small></div>
+ <div class="brand"><img src="/icon.png" alt=""><span class="bn">LiveShell Engine</span><small>v1.1</small></div>
+ <div class="tabs" id="tabs"><em class="k">L1</em><button class="tab on" data-t="all"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span>All</span></button><button class="tab" data-t="Internal"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="8" r="1.1" fill="currentColor"/><path d="M4 8h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Internal</span></button><button class="tab" data-t="USB"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="4.5" y="6" width="7" height="8.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 6V1.5h4V6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 3.5h0M9 3.5h0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>USB</span></button><button class="tab" data-t="games"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M4.5 4.5h7a3.5 3.5 0 0 1 3.4 4.3l-.7 2.9a1.7 1.7 0 0 1-2.9.8L9.9 11H6.1l-1.4 1.5a1.7 1.7 0 0 1-2.9-.8l-.7-2.9A3.5 3.5 0 0 1 4.5 4.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 7v2.4M3.8 8.2h2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10.6" cy="7.6" r=".9" fill="currentColor"/><circle cx="12" cy="9" r=".9" fill="currentColor"/></svg><span>Library</span></button><button class="tab" data-t="settings"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.5l1.3 1.8 2.2-.3.5 2.2 2 1-.9 2 .9 2-2 1-.5 2.2-2.2-.3L8 14.5l-1.3-1.8-2.2.3-.5-2.2-2-1 .9-2-.9-2 2-1 .5-2.2 2.2.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span>Settings</span></button><em class="k">R1</em></div>
  <div class="live"><div class="l1"><span class="dot" id="dot2"></span><span id="ptext">Wallpaper</span></div><div class="l2" id="addr2"></div></div>
 </div>
 
 <div class="cols"><div class="left">
-<h2>Playing now</h2>
 <div class="now" id="now"><div class="shade" id="shade"></div>
- <div class="cap"><div class="state"><span class="dot" id="dot"></span><span id="st">Connecting</span></div><div class="title" id="title">&nbsp;</div></div></div>
+ <div class="cap"><div class="state"><span class="dot" id="dot"></span><b>Playing now</b><span id="st">Connecting</span></div><div class="title" id="title">&nbsp;</div></div></div>
 
 <div id="videos">
 <h2>Your videos<span id="cnt"></span></h2>
+<div class="lhead"><span class="nm">Name</span><span class="col loc">Location</span><span class="col">Size</span></div>
 <div class="list" id="list"></div>
 <div class="empty" id="empty" style="display:none"><b>Add a video to get started</b>
  Copy an <code>.mp4</code> (H.264 or HEVC, up to 1080p) into <code>/data/LiveShell/video</code> on the console, or into a <code>liveshell</code> folder on a USB drive. It shows up here within a few seconds.</div>
+</div>
+
+<div id="gamesv" style="display:none">
+<h2>Library<span id="gcnt"></span></h2>
+<p class="ghint">Your games and apps. Pick one to give it its own video: it plays while that tile is highlighted, instead of the main video.</p>
+<div class="list two" id="glist"><div class="empty">Loading your library...</div></div>
 </div>
 
 <div id="settings" style="display:none">
 <h2>Settings</h2>
 <div class="opts">
  <button class="opt" id="o-power" onclick="power()"><div><b>Wallpaper</b><span>Turn the video on the home screen on or off.</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-mainvideo" onclick="opt('mainvideo')"><div><b>Main video</b><span>Plays on every tile that has no video of its own. Off: only tiles with their own video (Library) get one, the rest keep the normal PS5 background.</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-gamevideos" onclick="opt('gamevideos')"><div><b>Videos per game</b><span>Games and apps play the video you gave them in Library. Off: every tile uses the main video (your choices are kept).</span></div><span class="sw"></span></button>
  <button class="opt" id="o-shuffle" onclick="opt('shuffle')"><div><b>Random video on start</b><span>Each time LiveShell starts, it picks a different clip.</span></div><span class="sw"></span></button>
  <button class="opt" id="o-gamepause" onclick="opt('gamepause')"><div><b>Pause while a game runs</b><span>The video stops when a game starts and comes back when it closes.</span></div><span class="sw"></span></button>
- <button class="opt" id="o-parallax" onclick="opt('parallax')"><div><b>Parallax</b><span>The video shifts a little when you move between games on the home screen, for a sense of depth.</span></div><span class="sw"></span></button>
 </div>
 <h2>Phone and PC</h2>
 <div class="about remote"><div><b id="addr">Looking up the address</b>Open this address in a browser on your phone or PC (same Wi-Fi) to upload videos, play them, delete them and turn the wallpaper on or off.</div></div>
 <h2>About</h2>
-<div class="about"><img src="/icon.png" alt=""><div><b>LiveShell Engine v1.0</b>By AZiZ. Animated wallpapers for the PS5 home screen.</div></div>
+<div class="about"><img src="/icon.png" alt=""><div><b>LiveShell Engine v1.1</b>By AZiZ. Animated wallpapers for the PS5 home screen.</div></div>
 <div class="btns"><button class="reset" id="reset">Reset settings</button><button class="reset" id="shutdown">Shut down LiveShell</button></div>
 </div>
 </div>
 <aside class="side"><div class="look">
- <div class="grp"><button class="row" id="o-menuhide" onclick="opt('menuhide')"><div><h3>Hide in Settings</h3><p>Settings shows the normal PS5 background. The video comes back on the home screen.</p></div><span class="sw"></span></button></div>
- <div class="grp"><h3>Dim</h3><p>Darkens the video so the home screen stays easy to read.</p>
-  <div class="segs" id="dimctl"><button class="seg" data-v="0">Off</button><button class="seg" data-v="25">25%</button><button class="seg" data-v="50">50%</button><button class="seg" data-v="60">60%</button><button class="seg" data-v="70">70%</button><button class="seg" data-v="80">80%</button></div></div>
- <div class="grp"><h3>Vignette</h3><p>Dark edges, bright middle. A cinematic look.</p>
-  <div class="segs look" data-l="2" data-k="vignette"><button class="seg" data-v="0">Off</button><button class="seg" data-v="1">Light</button><button class="seg" data-v="2">Strong</button></div></div>
- <div class="grp"><h3>Haze</h3><p>A soft white veil that makes the video lighter and dreamier.</p>
-  <div class="segs look" data-l="3" data-k="haze"><button class="seg" data-v="0">Off</button><button class="seg" data-v="1">Light</button><button class="seg" data-v="2">Strong</button></div></div>
+ <div class="sec"><h4>Home screen</h4>
+  <button class="row" id="o-menuhide" onclick="opt('menuhide')"><div><h3>Hide in Settings</h3><p>Normal PS5 background in Settings and system apps.</p></div><span class="sw"></span></button>
+  <button class="row" id="o-parallax" onclick="opt('parallax')"><div><h3>Parallax</h3><p>The video shifts a little as you move between games.</p></div><span class="sw"></span></button>
+ </div>
+ <div class="sec"><h4>Picture</h4>
+  <div class="ctl"><h3>Dim</h3><div class="segs" id="dimctl"><button class="seg" data-v="0">Off</button><button class="seg" data-v="25">25</button><button class="seg" data-v="50">50</button><button class="seg" data-v="60">60</button><button class="seg" data-v="70">70</button><button class="seg" data-v="80">80</button></div></div>
+  <div class="ctl"><h3>Vignette</h3><div class="segs look" data-l="2" data-k="vignette"><button class="seg" data-v="0">Off</button><button class="seg" data-v="1">Light</button><button class="seg" data-v="2">Strong</button></div></div>
+  <div class="ctl"><h3>Haze</h3><div class="segs look" data-l="3" data-k="haze"><button class="seg" data-v="0">Off</button><button class="seg" data-v="1">Light</button><button class="seg" data-v="2">Strong</button></div></div>
+ </div>
+ <div class="sec"><h4>Sound</h4>
+  <div class="ctl"><div class="segs" id="volctl"><button class="seg" data-v="0">Mute</button><button class="seg" data-v="25">25%</button><button class="seg" data-v="50">50%</button><button class="seg" data-v="75">75%</button><button class="seg" data-v="100">100%</button></div>
+  <p class="note">For videos with sound. The PS5's own music goes quiet while one plays.</p></div>
+ </div>
 </div></aside>
 </div>
 
 <div class="hints">
  <span><svg width="14" height="14" viewBox="0 0 14 14"><path d="M2.5 2.5l9 9M11.5 2.5l-9 9" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>Set as wallpaper</span>
  <span><span class="pair"><em class="k">L1</em><em class="k">R1</em></span>Filter</span></div>
+<div class="modal" id="gm" style="display:none"><div class="sheet">
+ <h2 id="gmt">Background for this tile</h2>
+ <p class="hint">Pick the video that plays while this tile is highlighted on the home screen.</p>
+ <div class="list two" id="gml"></div>
+ <div class="btns"><button class="reset" id="gmmain">Reset</button><button class="reset" id="gmcancel">Cancel</button></div>
+</div></div>
 <div class="toast" id="toast"></div>
 <script>
 var S=null,busy=false,key='',nowKey='',tab='all',started=false;
-var TABS=['all','Internal','USB','settings'];
+var TABS=['all','Internal','USB','games','settings'];
 function $(i){return document.getElementById(i)}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function bare(n){return n.replace(/\.mp4$/i,'')}
@@ -191,7 +230,7 @@ function banner(i){
  return v;
 }
 var bannerBad='';
-function showCurrent(){var i=cur(),v=banner(i);if(v)v.onerror=function(){bannerBad=S&&i>=0?S.videos[i].path:'';plog('banner video error '+(v.error&&v.error.code));v.parentNode&&v.parentNode.removeChild(v)}}
+function showCurrent(){var i=cur(),v=banner(i);if(v){v.onerror=function(){bannerBad=S&&i>=0?S.videos[i].path:'';plog('banner video error '+(v.error&&v.error.code));v.parentNode&&v.parentNode.removeChild(v)}}}
 
 function stateText(){
  var s=S.status||'';
@@ -199,6 +238,7 @@ function stateText(){
  if(!S.enabled)return'Wallpaper is off';
  if(S.game&&S.gamepause)return'Paused while a game runs';
  if(s.indexOf('playing')==0)return'On your home screen';
+ if(S.mainvideo===false)return'Main video off: only tiles with their own video';
  if(s.indexOf('failed')==0)return'This video could not play. Try a 1080p .mp4';
  if(s.indexOf('start')==0||s.indexOf('stop')==0)return'Switching';
  return S.videos.length?'Waiting for the home screen':'No video yet';
@@ -212,12 +252,13 @@ function render(){
  var lk=document.querySelectorAll('.segs.look');for(var a1=0;a1<lk.length;a1++){var lv=(S.looks||[])[+lk[a1].getAttribute('data-l')]||0,bs=lk[a1].querySelectorAll('.seg');for(var b1=0;b1<bs.length;b1++)bs[b1].className='seg'+(+bs[b1].getAttribute('data-v')==lv?' on':'')}
  var sg=$('dimctl').querySelectorAll('.seg');for(var q=0;q<sg.length;q++)sg[q].className='seg'+(+sg[q].getAttribute('data-v')==S.dim?' on':'');
  $('shade').style.opacity=(S.dim||0)/100;
+ var sv=$('volctl').querySelectorAll('.seg'),vol=S.volume==null?100:S.volume;for(var q=0;q<sv.length;q++)sv[q].className='seg'+(+sv[q].getAttribute('data-v')==vol?' on':'');
  $('title').textContent=i>=0?nice(S.videos[i].name):(S.videos.length?'Pick a video below':'Nothing yet');
  $('addr').textContent=S.ip?'http://'+S.ip+':'+S.port:'No network address';
  $('addr2').innerHTML=S.ip?'Upload videos at <b>'+S.ip+':'+S.port+'</b>':'';
  var setv=tab=='settings';
- $('videos').style.display=setv?'none':'block';$('settings').style.display=setv?'block':'none';
- $('o-shuffle').className='opt'+(S.shuffle?' on':'');$('o-gamepause').className='opt'+(S.gamepause?' on':'');$('o-menuhide').className='row'+(S.menuhide?' on':'');$('o-parallax').className='opt'+(S.parallax?' on':'');
+ var gv=tab=='games';$('videos').style.display=setv||gv?'none':'block';$('settings').style.display=setv?'block':'none';$('gamesv').style.display=gv?'block':'none';if(gv&&!gamesLoaded)loadGames();
+ $('o-shuffle').className='opt'+(S.shuffle?' on':'');$('o-mainvideo').className='opt'+(S.mainvideo!==false?' on':'');$('o-gamevideos').className='opt'+(S.gamevideos!==false?' on':'');$('o-gamepause').className='opt'+(S.gamepause?' on':'');$('o-menuhide').className='row'+(S.menuhide?' on':'');$('o-parallax').className='row'+(S.parallax?' on':'');
  var list=S.videos.filter(shown);
  $('cnt').textContent=list.length?list.length:'';
  $('empty').style.display=S.videos.length?'none':'block';
@@ -231,10 +272,10 @@ function render(){
  S.videos.forEach(function(v,n){
   if(!shown(v))return;
   var on=n==i,t=nice(v.name);
-  h+='<div class="item"><button class="main'+(on?' on':'')+'" data-i="'+n+'" onclick="pick('+n+')">'
-   +'<span class="art">'+esc(t.charAt(0).toUpperCase())+'</span>'
-   +(on?'<span class="badge"><i></i>Playing</span>':'')
-   +'<div class="info"><div class="name">'+esc(t)+'</div><div class="sub"><span>'+esc(v.where)+'</span><span>'+mb(v.size)+'</span></div></div></button>'
+  h+='<div class="item vid"><button class="main'+(on?' on':'')+'" data-i="'+n+'" onclick="pick('+n+')">'
+   +'<div class="info"><div class="name">'+esc(t)+'</div><div class="sub"><span>'+esc(v.name)+'</span></div></div>'
+   +(on?'<span class="tag"><i></i>Playing</span>':'')
+   +'<span class="col loc">'+esc(v.where)+'</span><span class="col">'+mb(v.size)+'</span></button>'
    +'<button class="del" id="del'+n+'" onclick="del('+n+')" title="Delete"><svg width="15" height="15" viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span></span></button></div>';
  });
  $('list').innerHTML=h;
@@ -275,6 +316,7 @@ $('reset').onclick=function(){if(!arm(this,'Press again to reset'))return;get('/
 function step(d){var n=(TABS.indexOf(tab)+d+TABS.length)%TABS.length;setTab(TABS[n])}
 $('tabs').onclick=function(e){var b=e.target;while(b&&b!==this&&!b.getAttribute('data-t'))b=b.parentNode;var t=b&&b.getAttribute&&b.getAttribute('data-t');if(t)setTab(t)};
 var lkb=document.querySelectorAll('.segs.look');for(var c1=0;c1<lkb.length;c1++)lkb[c1].onclick=function(e){var v=e.target.getAttribute&&e.target.getAttribute('data-v');if(v==null||!S)return;var l=+this.getAttribute('data-l'),k=this.getAttribute('data-k'),t=this.parentNode.querySelector('h3').textContent;if(!S.looks)S.looks=[0,0,0,0];S.looks[l]=+v;render();get('/api/look?k='+k+'&v='+v,function(r){toast(r.ok?t+': '+['off','light','strong'][+v]:'That did not work. Check liveshell.log')})};
+$('volctl').onclick=function(e){var v=e.target.getAttribute&&e.target.getAttribute('data-v');if(v==null||!S)return;S.volume=+v;render();get('/api/volume?v='+v,function(r){toast(r.ok?(v=='0'?'Muted':'Sound '+v+'%'):'That did not work. Check liveshell.log')})};
 $('dimctl').onclick=function(e){var v=e.target.getAttribute&&e.target.getAttribute('data-v');if(v==null||!S)return;S.dim=+v;render();get('/api/dim?v='+v,function(r){toast(r.ok?(v=='0'?'Dim off':'Wallpaper dimmed '+v+'%'):'That did not work. Check liveshell.log')})};
 // Controller: the PS5 browser turns buttons into key events; which codes L1/R1/triangle send is
 // logged (first 40 keys) so they can be mapped. PageUp/PageDown are the usual guesses for L1/R1.
@@ -287,5 +329,40 @@ var pad={};
 function readPad(){var g=navigator.getGamepads?navigator.getGamepads():[];for(var n=0;n<g.length;n++){var p=g[n];if(!p)continue;
  [[4,function(){step(-1)}],[5,function(){step(1)}]].forEach(function(m){var d=p.buttons[m[0]]&&p.buttons[m[0]].pressed;if(d&&!pad[m[0]])m[1]();pad[m[0]]=d})}}
 if(navigator.getGamepads)setInterval(readPad,80);
+var GAME=(location.search.match(/[?&]game=([A-Za-z0-9]+)/)||[])[1]||'';
+// Library tab: every installed game and app; tap one to give it its own video.
+var GAMES=[],gamesLoaded=false;
+function loadGames(){gamesLoaded=true;var x=new XMLHttpRequest();x.open('GET','/api/games');x.onload=function(){try{GAMES=JSON.parse(x.responseText)}catch(e){GAMES=[]}renderGames()};x.send()}
+function gameName(tid){for(var k=0;k<GAMES.length;k++)if(GAMES[k].tid==tid)return GAMES[k].name;return tid}
+function clipName(path){var b=path.split('/').pop();return nice(b)}
+function renderGames(){
+ var own=0,ord=[];GAMES.forEach(function(g,n){if(g.clip){own++;ord.push(n)}});GAMES.forEach(function(g,n){if(!g.clip)ord.push(n)});
+ $('gcnt').textContent=GAMES.length?GAMES.length+(own?' \u00b7 '+own+' with their own video':''):'';var h='';
+ ord.forEach(function(n){var g=GAMES[n],has=!!g.clip;
+  h+='<div class="item"><button class="main'+(has?' on':'')+'" onclick="openPicker(GAMES['+n+'].tid)"><img class="gico" src="/gameicon?tid='+g.tid+'" alt="" onerror="this.style.visibility=\'hidden\'">'
+   +'<div class="info"><div class="name">'+esc(g.name)+'</div><div class="sub"><span>'+esc(g.tid)+'</span><span>'+(has?esc(clipName(g.clip)):'Main wallpaper')+'</span></div></div>'
+   +(has?'<span class="tag"><i></i>Own video</span>':'')+'</button></div>'});
+ $('glist').innerHTML=h||'<div class="empty">Nothing found.</div>';
+}
+// "★ Change background" in a game's menu opens this window with a pending game: show the picker.
+var gameShown='',gameNow='';
+function gameMap(){var m={};((S&&S.games)||'').split('\n').forEach(function(l){var k=l.indexOf('=');if(k>0)m[l.slice(0,k)]=l.slice(k+1)});return m}
+function openPicker(tid){
+ gameNow=tid;var cur=gameMap()[tid]||'',h='';
+ $('gmt').textContent='Background for '+gameName(tid);
+ S.videos.forEach(function(v,n){var on=v.path==cur,t=nice(v.name);
+  h+='<div class="item"><button class="main'+(on?' on':'')+'" onclick="pickGame('+n+')">'
+   +'<div class="info"><div class="name">'+esc(t)+'</div><div class="sub"><span>'+esc(v.where)+'</span><span>'+mb(v.size)+'</span></div></div>'
+   +(on?'<span class="tag"><i></i>Chosen</span>':'')+'</button></div>'});
+ $('gml').innerHTML=h||'<div class="empty">No videos yet.</div>';
+ $('gm').style.display='flex';var f=$('gml').querySelector('.main.on')||$('gml').querySelector('.main');if(f)f.focus();
+ plog('picker opened for game '+tid);
+}
+function closePicker(){$('gm').style.display='none';gameNow=''}
+function pickGame(n){var tid=gameNow,v=S.videos[n];get('/api/gamebg?tid='+tid+'&i='+n,function(r){toast(r.ok?nice(v.name)+' set for '+gameName(tid):(r.error||'That did not work'));closePicker();poll();loadGames()})}
+$('gmmain').onclick=function(){var tid=gameNow;get('/api/gamebg?tid='+tid+'&i=-1',function(r){toast(r.ok?gameName(tid)+' uses the main wallpaper':'That did not work');closePicker();poll();loadGames()})};
+$('gmcancel').onclick=function(){closePicker()};
+function checkGameReq(){if(!S)return;if(!gamesLoaded)loadGames();var g=GAME;if(g&&g!=gameShown){gameShown=g;GAME='';openPicker(g)}}
+setInterval(checkGameReq,700);
 poll();setInterval(poll,3000);
 </script></body></html>
