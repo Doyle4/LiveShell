@@ -40,7 +40,7 @@ Needs a jailbroken PS5 with a payload loader.
 
 Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported yet.
 
-## A video for a game
+## A video for a game (experimental)
 
 1. Open the **Library** tab and pick a game or app.
 2. Choose its video. **Reset** gives it back the default background.
