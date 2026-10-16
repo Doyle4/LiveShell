@@ -48,6 +48,11 @@ Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported ye
 
 Keep all videos in one place (internal **or** USB) for the quickest switching.
 
+Some tiles can't have their own video yet: they show the main video instead.
+
+- **Web-app / homebrew tiles** without a background picture (e.g. Payload Manager etc)
+- **Homebrew apps** with only a `pic0.png` and no `pic0.dds`
+
 ## Folders on the PS5
 
 | Path | What |
