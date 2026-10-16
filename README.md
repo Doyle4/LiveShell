@@ -27,7 +27,7 @@
 - **Pause while a game runs**, so games get the video decoder
 - **Parallax** effect when moving between games
 - **Random video** on every start
-- **rest mode**: comes back on its own after waking the PS5
+- **Rest mode**: comes back on its own after waking the PS5
 - **Home-screen app** to pick, delete and control everything
 - **Phone / PC page** to upload, play and delete videos
 
