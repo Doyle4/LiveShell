@@ -1959,6 +1959,9 @@ void refresh_blur() {
 
 constexpr const char* kMenusFile = "/system_tmp/liveshell/menus.txt";
 std::atomic<int> g_menus_req{0}; // 0 show in menus, 1 hide in menus
+constexpr const char* kStoreOnlyFile = "/system_tmp/liveshell/storeonly.txt";
+std::atomic<bool> g_store_only{false}; // PS Store only: the video shows only on the Store tile
+bool              g_tile_hide = false;  // Store only + another tile highlighted: video faded out
 Obj  g_focus_field  = nullptr;
 Obj  g_focus_vtable = nullptr;
 int  g_shellapp_val = -1;
@@ -2303,11 +2306,16 @@ void focus_tick() {
 	//    then a slow eased fade (~1 s). Back home: eased fade in (~0.7 s).
 	Obj        view    = g_own_view != nullptr ? g_own_view : g_boot_player;
 	const bool game    = g_game_val >= 0 && focus == g_game_val;
-	const bool hide    = game || (g_menus_req.load() == 1 && g_is_settings && view != nullptr);
+	// PS Store only: every tile but the Store (NPXS40047) shows Sony's own background; the video keeps
+	// playing hidden and muted, so the Store tile gets it back at once (no restart, no black).
+	g_tile_hide        = g_store_only.load() && strcmp(g_fast_tid, "NPXS40047") != 0;
+	const bool hide    = game || (g_menus_req.load() == 1 && g_is_settings && view != nullptr) ||
+	                  (g_tile_hide && view != nullptr);
 	if (hide != g_hidden) {
 		g_hidden       = hide;
 		g_hide_changed = g_tick;
-		wp_log("layers %s (%s)", hide ? "fading out" : "fading in", game ? "game" : hide ? "settings" : "home");
+		wp_log("layers %s (%s)", hide ? "fading out" : "fading in",
+		       game ? "game" : g_tile_hide ? "not the PS Store" : hide ? "settings" : "home");
 	}
 	if (view != g_hidden_view) {
 		g_hidden_view = view;
@@ -2420,6 +2428,8 @@ void focus_tick() {
 	if (hide) {
 		if (game) {
 			g_fade = g_fade + 1.0f / 72.0f > 1.0f ? 1.0f : g_fade + 1.0f / 72.0f; // ~1.2 s, at once
+		} else if (g_tile_hide) {
+			g_fade = g_fade + 1.0f / 15.0f > 1.0f ? 1.0f : g_fade + 1.0f / 15.0f; // ~0.25 s, at once
 		} else if (g_tick - g_hide_changed >= 9) {
 			g_fade = g_fade + 1.0f / 60.0f > 1.0f ? 1.0f : g_fade + 1.0f / 60.0f;
 		}
@@ -2614,6 +2624,11 @@ uint64_t SetBg_Hook(Obj self, Obj param) {
 					tid.assign(p + strlen(key), strnlen(p + strlen(key), 9));
 				}
 			}
+			// The PlayStation Store tile (NPXS40047, from app.db) shows Sony's bg_NPXS40047 texture:
+			// it can get its own video like a game (user request, v1.2).
+			if (tid.empty() && strstr(img, "bg_NPXS40047") != nullptr) {
+				tid = "NPXS40047";
+			}
 			static std::string last = "?";
 			if (tid != last) {
 				last = tid;
@@ -2673,6 +2688,7 @@ uint64_t setsysbgm_hook(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t
 	const std::string tid  = title_in(text.c_str());
 	char              path[512];
 	const bool block = !tid.empty() && g_own_player != nullptr && g_vol_req.load() > 0 &&
+	                   !(g_store_only.load() && tid != "NPXS40047") &&
 	                   fast_lookup(tid.c_str(), path, sizeof(path)) && path[0] == '/' && !clip_is_silent(path);
 	if (block && g_bgm_logs < 20) {
 		++g_bgm_logs;
@@ -2941,7 +2957,8 @@ void focus_sound_tick() {
 	if (g_own_player == nullptr || g_vplayer_class == nullptr || !fast_lookup(g_fast_tid, path, sizeof(path))) {
 		return;
 	}
-	const bool ours = path[0] == '/' && g_vol_req.load() > 0 && !clip_is_silent(path); // its sound replaces it
+	const bool ours = path[0] == '/' && g_vol_req.load() > 0 && !clip_is_silent(path) && // its sound replaces it
+	                  !(g_store_only.load() && strcmp(g_fast_tid, "NPXS40047") != 0);
 	set_bgm_suppression(g_vplayer_class, g_own_player, !ours);
 	wp_log("sound: %s highlighted (tick %d) -> PS5 music %s", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)", g_tick,
 	       ours ? "held back" : "allowed");
@@ -2961,7 +2978,12 @@ void sound_tick() {
 		set_bgm_suppression(g_vplayer_class, g_own_player, muted || g_clip_silent);
 		wp_log("sound: %s", muted ? "muted, PS5 music allowed" : "on");
 	}
-	const float goal = g_switch_at >= 0 ? 0.0f : static_cast<float>(want);
+	static bool tile_hidden = false;
+	if (g_tile_hide != tile_hidden) {
+		tile_hidden = g_tile_hide;
+		set_bgm_suppression(g_vplayer_class, g_own_player, tile_hidden || muted || g_clip_silent);
+	}
+	const float goal = g_switch_at >= 0 || g_tile_hide ? 0.0f : static_cast<float>(want);
 	if (g_aud_now < goal) {
 		g_aud_now = g_aud_now + 2.4f > goal ? goal : g_aud_now + 2.4f; // in: 100 % in ~0.7 s
 	} else if (g_aud_now > goal) {
@@ -3140,6 +3162,14 @@ void* wallpaper_thread(void*) {
 			int vol = -1;
 			if (fscanf(f, "%d", &vol) == 1 && vol >= 0 && vol <= 100 && vol != g_vol_req.load()) {
 				g_vol_req.store(vol);
+			}
+			fclose(f);
+		}
+		if (FILE* f = fopen(kStoreOnlyFile, "r")) {
+			int on = 0;
+			if (fscanf(f, "%d", &on) == 1 && (on == 0 || on == 1) && (on == 1) != g_store_only.load()) {
+				g_store_only.store(on == 1);
+				wp_log("PS Store only: %s", on ? "on" : "off");
 			}
 			fclose(f);
 		}

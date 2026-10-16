@@ -78,6 +78,7 @@ constexpr const char* kDimFile        = "/system_tmp/liveshell/dim.txt";
 constexpr const char* kVolumeFile     = "/system_tmp/liveshell/volume.txt";
 constexpr const char* kBlurFile       = "/system_tmp/liveshell/blur.txt";
 constexpr const char* kMenusFile      = "/system_tmp/liveshell/menus.txt";
+constexpr const char* kStoreOnlyFile  = "/system_tmp/liveshell/storeonly.txt";
 constexpr const char* kLooksFile      = "/system_tmp/liveshell/looks.txt";
 constexpr const char* kParallaxFile   = "/system_tmp/liveshell/parallax.txt";
 constexpr const char* kLogFile        = "/data/LiveShell/liveshell.log";
@@ -107,6 +108,7 @@ bool        g_main_video = true; // off = only tiles with their own video play o
 bool        g_game_videos = true; // off = per-game videos ignored (games.txt kept)
 bool        g_game_pause = true; // no video while a game runs
 bool        g_menu_hide  = true;  // hide the video in Settings / system apps (default: safer)
+bool        g_store_only = false; // video only while the PS Store tile is highlighted (off by default)
 bool        g_parallax   = false; // nudge the video when moving between home tiles
 bool        g_game_running = false;
 std::string g_game_title;
@@ -225,9 +227,54 @@ bool mount_window_at(const char* mount_point, const char* source) {
 	return true;
 }
 
+// /system_ex/vsh_asset/wallpaper is NOT Sony's: on the dev console it was made once while OnionHEN had
+// /system_ex writable, so every test found it. A normal PS5 has no such folder and /system_ex is
+// read-only -> "nullfs mount ... failed (errno 2)" and no video (GitHub issue #2). Make it once the
+// way OnionHEN's bootstrapper does: remount /system_ex writable in place (it stays so, as with
+// OnionHEN, which relies on that), add only this one empty folder, never touch Sony's files.
+bool remount_system_ex_writable() {
+	char k_fstype[] = "fstype", v_fstype[] = "exfatfs", k_fspath[] = "fspath", v_fspath[] = "/system_ex";
+	char k_from[] = "from", v_from[] = "/dev/ssd0.system_ex", k_large[] = "large", v_yes[] = "yes";
+	char k_tz[] = "timezone", v_tz[] = "static", k_async[] = "async", k_acl[] = "ignoreacl";
+	iovec iov[] = {
+	    {k_fstype, sizeof(k_fstype)}, {v_fstype, sizeof(v_fstype)}, {k_fspath, sizeof(k_fspath)},
+	    {v_fspath, sizeof(v_fspath)}, {k_from, sizeof(k_from)},     {v_from, sizeof(v_from)},
+	    {k_large, sizeof(k_large)},   {v_yes, sizeof(v_yes)},       {k_tz, sizeof(k_tz)},
+	    {v_tz, sizeof(v_tz)},         {k_async, sizeof(k_async)},   {nullptr, 0},
+	    {k_acl, sizeof(k_acl)},       {nullptr, 0},
+	};
+	return nmount(iov, sizeof(iov) / sizeof(iov[0]), MNT_UPDATE) == 0;
+}
+
+bool ensure_mount_point() {
+	struct stat st {};
+	if (stat(kMountPoint, &st) == 0 && S_ISDIR(st.st_mode)) {
+		return true;
+	}
+	if (mkdir(kMountPoint, 0777) == 0) {
+		log("made %s", kMountPoint);
+		return true;
+	}
+	const int first = errno;
+	if (!remount_system_ex_writable()) {
+		log("cannot make %s (errno %d): /system_ex remount failed (errno %d)", kMountPoint, first, errno);
+		return false;
+	}
+	if (mkdir(kMountPoint, 0777) != 0 && errno != EEXIST) {
+		log("cannot make %s after remounting /system_ex (errno %d)", kMountPoint, errno);
+		return false;
+	}
+	log("made %s (/system_ex remounted writable, as OnionHEN does)", kMountPoint);
+	return true;
+}
+
 // System processes each see their own sandbox view (/mnt/sandbox/<id>/...): a mount on the real
 // /system_ex does not show there, so the window is opened in every sandbox too.
 void mount_window_everywhere(const std::string& folder) {
+	if (!ensure_mount_point()) {
+		notify("LiveShell Engine could not prepare its video folder. Log: /data/LiveShell/liveshell.log");
+		return;
+	}
 	if (!mount_window_at(kMountPoint, folder.c_str())) {
 		return;
 	}
@@ -326,13 +373,15 @@ void load_config() {
 		} else if (line.rfind("gamevideos=", 0) == 0) {
 			g_game_videos = line.substr(11) != "0";
 		} else if (line.rfind("mainvideo=", 0) == 0) {
-			g_main_video = line.substr(10) != "0";
+			// ignored: the "Main video" switch was removed (it is always on)
 		} else if (line.rfind("shuffle=", 0) == 0) {
 			g_shuffle = line.substr(8) != "0";
 		} else if (line.rfind("parallax=", 0) == 0) {
 			g_parallax = line.substr(9) != "0";
 		} else if (line.rfind("menuhide=", 0) == 0) {
 			g_menu_hide = line.substr(9) != "0";
+		} else if (line.rfind("storeonly=", 0) == 0) {
+			g_store_only = line.substr(10) != "0";
 		} else if (line.rfind("gamepause=", 0) == 0) {
 			g_game_pause = line.substr(10) != "0";
 		}
@@ -347,13 +396,14 @@ void load_config() {
 	write_text(kVolumeFile, std::to_string(g_volume) + "\n");
 	write_text(kBlurFile, std::to_string(g_blur) + "\n");
 	write_text(kMenusFile, g_menu_hide ? "1\n" : "0\n");
+	write_text(kStoreOnlyFile, g_store_only ? "1\n" : "0\n");
 	write_looks();
 	write_text(kParallaxFile, g_parallax ? "1\n" : "0\n");
 }
 
 void save_config() {
 	write_text(kConfigFile, std::string("enabled=") + (g_enabled ? "1" : "0") + "\nvideo=" + g_current + "\ndim=" + std::to_string(g_dim) + "\nvolume=" + std::to_string(g_volume) + "\nblur=" + std::to_string(g_blur) + "\nlooks=" + looks_text() +
-	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=" + (g_main_video ? "1" : "0") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\n");
+	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=" + (g_main_video ? "1" : "0") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nstoreonly=" + (g_store_only ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\n");
 }
 
 // ---- telling ShellUI what to play ------------------------------------------------------------
@@ -508,6 +558,14 @@ std::string shown_path(const std::string& clip) {
 
 bool apply_inner(std::string& error);
 
+// PS Store only works on its own, like the main video: ONE clip plays (hidden on other tiles), so
+// nothing ever swaps. It is the clip chosen for the Store (games.txt NPXS40047), else the main one.
+// (The first try kept the main clip and swapped on the Store tile: its first frame showed, user.)
+std::string store_clip() {
+	const std::string c = saved_game_clip("NPXS40047");
+	return !c.empty() && exists(c.c_str()) ? c : g_current;
+}
+
 // Caller holds g_ctl. Every change also refreshes ShellUI's fast-switch map.
 bool apply_locked(std::string& error) {
 	const bool ok = apply_inner(error);
@@ -517,7 +575,8 @@ bool apply_locked(std::string& error) {
 
 bool apply_inner(std::string& error) {
 	// The tile's own clip wins; otherwise the main one, unless "Main video" is off (then nothing).
-	const std::string clip = !g_override.empty() ? g_override : (g_main_video ? g_current : std::string());
+	const std::string clip = g_store_only ? store_clip()
+	                         : !g_override.empty() ? g_override : (g_main_video ? g_current : std::string());
 	// Same folder while a clip plays: quick swap in ShellUI (fade to black, swap, fade in), no
 	// release wait: the folder stays mounted (the full stop took ~4 s per switch, test v11-4).
 	if (g_injected && g_enabled && !(g_game_pause && g_game_running) && !clip.empty() && exists(clip.c_str()) &&
@@ -1052,6 +1111,7 @@ State get_state() {
 		st.game_videos = g_game_videos;
 		st.game_pause = g_game_pause;
 		st.menu_hide  = g_menu_hide;
+		st.store_only = g_store_only;
 		st.parallax   = g_parallax;
 		st.game       = g_game_running ? g_game_title : std::string();
 	}
@@ -1134,11 +1194,6 @@ bool set_option(const std::string& key, bool on, std::string& error) {
 		log("option gamevideos=%d", on ? 1 : 0);
 		g_focus_recheck = true; // the highlighted tile decides again
 		return !g_injected || apply_locked(error);
-	} else if (key == "mainvideo") {
-		g_main_video = on;
-		save_config();
-		log("option mainvideo=%d", on ? 1 : 0);
-		return !g_injected || apply_locked(error); // takes effect on the highlighted tile at once
 	} else if (key == "gamepause") {
 		g_game_pause = on;
 	} else if (key == "parallax") {
@@ -1147,6 +1202,15 @@ bool set_option(const std::string& key, bool on, std::string& error) {
 	} else if (key == "menuhide") {
 		g_menu_hide = on;
 		write_text(kMenusFile, on ? "1\n" : "0\n");
+	} else if (key == "storeonly") {
+		// PS Store only: ShellUI hides (fades + mutes) the video on every other tile; per-game videos
+		// are not used. The player keeps running, so coming back to the Store is instant.
+		g_store_only = on;
+		write_text(kStoreOnlyFile, on ? "1\n" : "0\n");
+		g_focus_recheck = true;
+		save_config();
+		log("option storeonly=%d", on ? 1 : 0);
+		return !g_injected || apply_locked(error); // the Store's clip (or the normal one) now
 	} else {
 		error = "Unknown setting";
 		return false;
@@ -1231,6 +1295,8 @@ bool reset_settings(std::string& error) {
 	g_game_videos = true;
 	g_game_pause = true;
 	g_menu_hide  = true;
+	g_store_only = false;
+	write_text(kStoreOnlyFile, "0\n");
 	g_parallax   = false;
 	write_text(kParallaxFile, "0\n");
 	write_text(kMenusFile, "1\n");
@@ -1282,6 +1348,10 @@ void set_game_background(const std::string& tid, const std::string& path) {
 	write_fast_map();
 	g_focus_recheck = true;
 	log("game background %s -> %s", tid.c_str(), path.empty() ? "main wallpaper" : path.c_str());
+	if (g_store_only && tid == "NPXS40047" && g_injected) {
+		std::string error;
+		apply_locked(error);
+	}
 }
 
 // ShellUI's fast switch (test v11-8): it picks the highlighted game's clip itself from this map
@@ -1352,8 +1422,8 @@ void write_fast_map() {
 		}
 		return shown_path(clip);
 	};
-	std::string       out  = "*=" + (g_main_video ? shown(g_current) : std::string("off")) + "\n";
-	const std::string text = g_game_videos ? read_text(kGamesFile, 64 * 1024) : std::string();
+	std::string       out  = "*=" + (g_store_only ? shown(store_clip()) : g_main_video ? shown(g_current) : std::string("off")) + "\n";
+	const std::string text = g_game_videos && !g_store_only ? read_text(kGamesFile, 64 * 1024) : std::string();
 	size_t            pos  = 0;
 	while (pos < text.size()) {
 		const size_t      end  = text.find('\n', pos);
@@ -1466,7 +1536,7 @@ std::vector<Game> list_games() {
 // the same tile, play that game's clip (games.txt) instead of the main one; elsewhere, the main one.
 // What PLAYS for a tile: its saved clip, unless "Videos per game" is off (then the main one).
 std::string game_clip(const std::string& tid) {
-	return g_game_videos ? saved_game_clip(tid) : std::string();
+	return g_game_videos && !g_store_only ? saved_game_clip(tid) : std::string();
 }
 
 // The clip saved for a tile in games.txt (the Library list shows it even when switched off).

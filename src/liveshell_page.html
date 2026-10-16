@@ -140,7 +140,7 @@ h2 span{font-size:14px;color:var(--dim);font-weight:400}
 @media (prefers-reduced-motion:reduce){.dot.live,.tag i{animation:none}.sw,.sw:after,.shade{transition:none}}
 </style></head><body>
 <div class="top">
- <div class="brand"><img src="/icon.png" alt=""><span class="bn">LiveShell Engine</span><small>v1.1</small></div>
+ <div class="brand"><img src="/icon.png" alt=""><span class="bn">LiveShell Engine</span><small>v1.2</small></div>
  <div class="tabs" id="tabs"><em class="k">L1</em><button class="tab on" data-t="all"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span>All</span></button><button class="tab" data-t="Internal"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="8" r="1.1" fill="currentColor"/><path d="M4 8h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Internal</span></button><button class="tab" data-t="USB"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="4.5" y="6" width="7" height="8.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 6V1.5h4V6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 3.5h0M9 3.5h0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>USB</span></button><button class="tab" data-t="games"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M4.5 4.5h7a3.5 3.5 0 0 1 3.4 4.3l-.7 2.9a1.7 1.7 0 0 1-2.9.8L9.9 11H6.1l-1.4 1.5a1.7 1.7 0 0 1-2.9-.8l-.7-2.9A3.5 3.5 0 0 1 4.5 4.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 7v2.4M3.8 8.2h2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10.6" cy="7.6" r=".9" fill="currentColor"/><circle cx="12" cy="9" r=".9" fill="currentColor"/></svg><span>Library</span></button><button class="tab" data-t="settings"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.5l1.3 1.8 2.2-.3.5 2.2 2 1-.9 2 .9 2-2 1-.5 2.2-2.2-.3L8 14.5l-1.3-1.8-2.2.3-.5-2.2-2-1 .9-2-.9-2 2-1 .5-2.2 2.2.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span>Settings</span></button><em class="k">R1</em></div>
  <div class="live"><div class="l1"><span class="dot" id="dot2"></span><span id="ptext">Wallpaper</span></div><div class="l2" id="addr2"></div></div>
 </div>
@@ -167,7 +167,6 @@ h2 span{font-size:14px;color:var(--dim);font-weight:400}
 <h2>Settings</h2>
 <div class="opts">
  <button class="opt" id="o-power" onclick="power()"><div><b>Wallpaper</b><span>Turn the video on the home screen on or off.</span></div><span class="sw"></span></button>
- <button class="opt" id="o-mainvideo" onclick="opt('mainvideo')"><div><b>Main video</b><span>Plays on every tile that has no video of its own. Off: only tiles with their own video (Library) get one, the rest keep the normal PS5 background.</span></div><span class="sw"></span></button>
  <button class="opt" id="o-gamevideos" onclick="opt('gamevideos')"><div><b>Videos per game</b><span>Games and apps play the video you gave them in Library. Off: every tile uses the main video (your choices are kept).</span></div><span class="sw"></span></button>
  <button class="opt" id="o-shuffle" onclick="opt('shuffle')"><div><b>Random video on start</b><span>Each time LiveShell starts, it picks a different clip.</span></div><span class="sw"></span></button>
  <button class="opt" id="o-gamepause" onclick="opt('gamepause')"><div><b>Pause while a game runs</b><span>The video stops when a game starts and comes back when it closes.</span></div><span class="sw"></span></button>
@@ -175,13 +174,15 @@ h2 span{font-size:14px;color:var(--dim);font-weight:400}
 <h2>Phone and PC</h2>
 <div class="about remote"><div><b id="addr">Looking up the address</b>Open this address in a browser on your phone or PC (same Wi-Fi) to upload videos, play them, delete them and turn the wallpaper on or off.</div></div>
 <h2>About</h2>
-<div class="about"><img src="/icon.png" alt=""><div><b>LiveShell Engine v1.1</b>By AZiZ. Animated wallpapers for the PS5 home screen.</div></div>
+<div class="about"><img src="/icon.png" alt=""><div><b>LiveShell Engine v1.2</b>By AZiZ. Animated wallpapers for the PS5 home screen.</div></div>
 <div class="btns"><button class="reset" id="reset">Reset settings</button><button class="reset" id="shutdown">Shut down LiveShell</button></div>
 </div>
 </div>
 <aside class="side"><div class="look">
  <div class="sec"><h4>Home screen</h4>
   <button class="row" id="o-menuhide" onclick="opt('menuhide')"><div><h3>Hide in Settings</h3><p>Normal PS5 background in Settings and system apps.</p></div><span class="sw"></span></button>
+  <button class="row" id="o-storeonly" onclick="opt('storeonly')"><div><h3>PS Store only</h3><p>The video shows only on the PlayStation Store tile. Other tiles keep the normal PS5 look.</p></div><span class="sw"></span></button>
+  <button class="row" id="o-storeclip" onclick="openPicker('NPXS40047')" style="display:none"><div><h3>PS Store video</h3><p id="storeclipname">Main video</p></div><span class="tag">Change</span></button>
   <button class="row" id="o-parallax" onclick="opt('parallax')"><div><h3>Parallax</h3><p>The video shifts a little as you move between games.</p></div><span class="sw"></span></button>
  </div>
  <div class="sec"><h4>Picture</h4>
@@ -238,7 +239,6 @@ function stateText(){
  if(!S.enabled)return'Wallpaper is off';
  if(S.game&&S.gamepause)return'Paused while a game runs';
  if(s.indexOf('playing')==0)return'On your home screen';
- if(S.mainvideo===false)return'Main video off: only tiles with their own video';
  if(s.indexOf('failed')==0)return'This video could not play. Try a 1080p .mp4';
  if(s.indexOf('start')==0||s.indexOf('stop')==0)return'Switching';
  return S.videos.length?'Waiting for the home screen':'No video yet';
@@ -258,7 +258,7 @@ function render(){
  $('addr2').innerHTML=S.ip?'Upload videos at <b>'+S.ip+':'+S.port+'</b>':'';
  var setv=tab=='settings';
  var gv=tab=='games';$('videos').style.display=setv||gv?'none':'block';$('settings').style.display=setv?'block':'none';$('gamesv').style.display=gv?'block':'none';if(gv&&!gamesLoaded)loadGames();
- $('o-shuffle').className='opt'+(S.shuffle?' on':'');$('o-mainvideo').className='opt'+(S.mainvideo!==false?' on':'');$('o-gamevideos').className='opt'+(S.gamevideos!==false?' on':'');$('o-gamepause').className='opt'+(S.gamepause?' on':'');$('o-menuhide').className='row'+(S.menuhide?' on':'');$('o-parallax').className='row'+(S.parallax?' on':'');
+ $('o-shuffle').className='opt'+(S.shuffle?' on':'');$('o-gamevideos').className='opt'+(S.gamevideos!==false?' on':'');$('o-gamepause').className='opt'+(S.gamepause?' on':'');$('o-menuhide').className='row'+(S.menuhide?' on':'');$('o-parallax').className='row'+(S.parallax?' on':'');$('o-storeonly').className='row'+(S.storeonly?' on':'');$('o-storeclip').style.display=S.storeonly?'':'none';var sc=gameMap()['NPXS40047'];$('storeclipname').textContent=sc?clipName(sc):'Main video';
  var list=S.videos.filter(shown);
  $('cnt').textContent=list.length?list.length:'';
  $('empty').style.display=S.videos.length?'none':'block';
@@ -333,7 +333,7 @@ var GAME=(location.search.match(/[?&]game=([A-Za-z0-9]+)/)||[])[1]||'';
 // Library tab: every installed game and app; tap one to give it its own video.
 var GAMES=[],gamesLoaded=false;
 function loadGames(){gamesLoaded=true;var x=new XMLHttpRequest();x.open('GET','/api/games');x.onload=function(){try{GAMES=JSON.parse(x.responseText)}catch(e){GAMES=[]}renderGames()};x.send()}
-function gameName(tid){for(var k=0;k<GAMES.length;k++)if(GAMES[k].tid==tid)return GAMES[k].name;return tid}
+function gameName(tid){if(tid=='NPXS40047')return'PlayStation Store';for(var k=0;k<GAMES.length;k++)if(GAMES[k].tid==tid)return GAMES[k].name;return tid}
 function clipName(path){var b=path.split('/').pop();return nice(b)}
 function renderGames(){
  var own=0,ord=[];GAMES.forEach(function(g,n){if(g.clip){own++;ord.push(n)}});GAMES.forEach(function(g,n){if(!g.clip)ord.push(n)});

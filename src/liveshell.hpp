@@ -37,6 +37,7 @@ struct State {
 	bool               game_videos = true; // off = per-game videos ignored
 	bool               game_pause = true;  // no video while a game runs
 	bool               menu_hide  = true;  // hide the video in Settings / system apps
+	bool               store_only = false; // video only on the PS Store tile
 	bool               parallax   = false; // nudge the video when moving between home tiles
 	std::string        game;               // title id of the running game ("" = none)
 	std::string        current;  // real path of the chosen clip ("" = none)
