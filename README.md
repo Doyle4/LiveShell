@@ -18,6 +18,7 @@
 ## Features
 
 - **Library** tab with all your games and apps, to give each one its own video (experimental).
+- **PS Store only**: the video shows only on the PlayStation Store tile, with its own video.
 - **Sound**: videos with sound play it.
 - **Game music**: a game's own theme keeps playing when its video has no sound or Sound is on Mute
 - **Your clips** from internal storage or a USB drive
