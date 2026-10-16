@@ -17,13 +17,17 @@
 
 ## Features
 
-- **Video wallpaper** behind the home screen, seamless loop
+- **Library** tab with all your games and apps, to give each one its own video
+- **Sound**: videos with sound play it, Mute / 25 / 50 / 75 / 100 %
+- **Game music**: a game's own theme keeps playing when its video has no sound or Sound is on Mute
+- **Main video** and **Videos per game** switches: per-game videos only, the main video only, or both
 - **Your clips** from internal storage or a USB drive
 - **Looks**: Dim, Vignette, Haze, all combinable
 - **Hide in Settings**: Settings keeps the normal PS5 background
 - **Pause while a game runs**, so games get the video decoder
-- **Parallax** when moving between games
+- **Parallax** effect when moving between games
 - **Random video** on every start
+- **rest mode**: comes back on its own after waking the PS5
 - **Home-screen app** to pick, delete and control everything
 - **Phone / PC page** to upload, play and delete videos
 
@@ -35,7 +39,14 @@ Needs a jailbroken PS5 with a payload loader.
 2. Load `liveshell.elf`.
 3. Open the **LiveShell Engine** on the home screen (Media).
 
-Videos: H.264 and HEVC Only 1080p. 4k not supported yet.
+Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported yet.
+
+## A video for a game
+
+1. Open the **Library** tab and pick a game or app.
+2. Choose its video. **Reset** gives it back the default background.
+
+Keep all videos in one place (internal **or** USB) for the quickest switching.
 
 ## Controls
 
