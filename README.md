@@ -17,6 +17,7 @@
 
 ## Features
 
+- **Discover**: hundreds of animated wallpapers to download right on the PS5, by category (Anime, Games, Movies, ...) the list updates by itself.
 - **Library** tab with all your games and apps, to give each one its own video (experimental).
 - **PS Store only**: the video shows only on the PlayStation Store tile, with its own video.
 - **Sound**: videos with sound play it.
