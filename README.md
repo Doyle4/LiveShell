@@ -58,7 +58,7 @@ Keep all videos in one place (internal **or** USB) for the quickest switching.
 
 - 🎮 **Games**: PS5 and PS4
 - 🧩 **Homebrew and web-app tiles**: Payload Manager, etaHEN Toolbox, and more
-- 🛍️ **PlayStation Store**: with PS Store only, or as its own tile
+- 🛍️ **PlayStation Store**: with PS Store only.
 
 ## Folders on the PS5
 
