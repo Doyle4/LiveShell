@@ -41,6 +41,11 @@ Needs a jailbroken PS5 with a payload loader.
 
 Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported yet.
 
+## Discover
+
+1. Open the **Discover** tab (needs the internet).
+3. Download and Press **Use**: it plays on the home screen or per game. Downloaded wallpapers also appear in **All**.
+
 ## A video for a game (experimental)
 
 1. Open the **Library** tab and pick a game or app.
@@ -48,10 +53,11 @@ Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported ye
 
 Keep all videos in one place (internal **or** USB) for the quickest switching.
 
-Some tiles can't have their own video yet: they show the main video instead.
+**A video for every tile**
 
-- **Web-app / homebrew tiles** without a background picture (e.g. Payload Manager etc)
-- **Homebrew apps** with only a `pic0.png` and no `pic0.dds`
+- 🎮 **Games**: PS5 and PS4
+- 🧩 **Homebrew and web-app tiles**: Payload Manager, etaHEN Toolbox, and more
+- 🛍️ **PlayStation Store**: with PS Store only, or as its own tile
 
 ## Folders on the PS5
 
