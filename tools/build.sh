@@ -17,9 +17,9 @@ DEST="$TREE/source/liveshell"
 [ -d "$SDK" ] || { echo "PS5 payload SDK not found: $SDK (set PS5_PAYLOAD_SDK=...)"; exit 1; }
 
 mkdir -p "$DEST"
-rm -f "$DEST"/*.cpp "$DEST"/*.hpp "$DEST"/*.html "$DEST"/icon0.png
+rm -f "$DEST"/*.cpp "$DEST"/*.hpp "$DEST"/*.c "$DEST"/*.h "$DEST"/*.html "$DEST"/icon0.png
 grep -q '^add_subdirectory(liveshell)' "$TREE/source/CMakeLists.txt" || echo 'add_subdirectory(liveshell)' >> "$TREE/source/CMakeLists.txt"
-cp "$SRC"/*.cpp "$SRC"/*.hpp "$SRC"/*.html "$SRC/CMakeLists.txt" "$DEST/"
+cp "$SRC"/*.cpp "$SRC"/*.hpp "$SRC"/*.c "$SRC"/*.h "$SRC"/*.html "$SRC/CMakeLists.txt" "$DEST/"
 cp "$HERE/assets/icon0.png" "$DEST/icon0.png"
 
 [ -d "$HOME/ps5/wallpaper/bin" ] && export PATH="$HOME/ps5/wallpaper/bin:$PATH"

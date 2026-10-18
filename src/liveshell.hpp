@@ -1,6 +1,7 @@
 // LiveShell daemon: shared declarations (daemon, web window, home-screen tile). GPL-3.0.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,7 @@ struct State {
 	bool               menu_hide  = true;  // hide the video in Settings / system apps
 	bool               store_only = false; // video only on the PS Store tile
 	bool               parallax   = false; // nudge the video when moving between home tiles
+	bool               game_hide  = false; // no video on the home screen while a game is open
 	std::string        game;               // title id of the running game ("" = none)
 	std::string        current;  // real path of the chosen clip ("" = none)
 	std::string        status;   // ShellUI status line: playing / stopped / failed / starting
@@ -71,9 +73,18 @@ std::string       saved_game_clip(const std::string& tid); // saved choice, even
 bool              is_title_id(const char* name);
 void*             focus_thread(void*);
 void              mirror_games();
+bool              clip_is_big(const std::string& path); // bigger than 1080p (4K: not supported)
+std::string       clip_problem(const std::string& path); // why the PS5 will not play it ("" = plays / unknown)
+std::string       clip_res(const std::string& path);     // "4K" / "2K" / "FHD" / "HD" / "" (list badges)
+bool              clip_has_audio(const std::string& path); // it has a sound track (the list's sound badge)
+std::vector<std::string> favorites();                // favorite clip paths (pinned at the top of the list)
+void              set_favorite(const std::string& path, bool on);
+bool              refuse_4k(const std::string& path, std::string& error); // 4K: not supported (notifies)
+void              write_game_open(); // ShellUI hint for "Hide while a game is open"; caller holds g_ctl
 void              write_fast_map(); // ShellUI's fast-switch map; caller holds g_ctl
 
 void start_web_server();
+bool page_open(); // the LiveShell window's page is polling (it is open on the PS5)
 
 // Home-screen tile that opens kWebUrl. Returns 1 = newly added, 0 = was already there, -1 = failed.
 int install_tile();

@@ -238,11 +238,20 @@ const char* (*mono_class_get_name)(Obj klass);
 
 std::atomic<const char*> g_step{"start"};
 
+// The class probes (every property / field / method of Sony's classes, used to write this file) stay out
+// of a release's log: true only for development builds.
+constexpr bool kProbeLogs = false;
+
 // Heartbeat: if our thread crashes at a step, the heartbeat stops at the same moment; if it is stuck
 // in a step while ShellUI keeps running until something kills it, the heartbeat keeps going.
 void* heartbeat_thread(void*) {
-	for (int i = 0; i < 100; ++i) {
-		wp_log("heartbeat, step: %s", g_step.load());
+	const char* last = nullptr;
+	for (int i = 0; i < 100; ++i) { // ~70 s: a new step at once, the same step every 10 s
+		const char* step = g_step.load();
+		if (step != last || i % 10 == 0) {
+			wp_log("heartbeat, step: %s", step);
+			last = step;
+		}
 		usleep(i < 40 ? 250 * 1000 : 1000 * 1000);
 	}
 	return nullptr;
@@ -754,12 +763,101 @@ Obj g_own_player   = nullptr;
 Obj g_own_view     = nullptr;
 Obj g_own_play0    = nullptr;
 int g_own_frames   = 0;
+extern bool g_hidden;       // hidden on purpose (Settings, our window, PS Store only)
+extern int  g_hide_changed; // the tick it last changed
 int g_own_logs     = 0;
 int g_own_restarts = 0;
 bool g_own_loop_set = false;
 
 
 void set_blend(Obj view, bool overwrite);
+
+// 4K (v1.4): Sony's player gets a UHD decoder only for a stream (an http uri), not for a file path - the
+// payload streams 4K clips on 127.0.0.1:9050/uhd/<file>. The recipe: the parameterless
+// CreateOptionParam (Sony's defaults) + createMode Playback + frameBufferSize 1920x1080 + coreResourceType UHD.
+// With a game open the PS5 gives the home screen no UHD decoder ("close this game..."): a 4K clip hides then,
+// as "Hide while a game is open" does (the game's art shows), and comes back when the game closes.
+bool g_play_uhd          = false; // the running player streams a 4K clip
+bool g_on_fallback       = false; // a 4K clip is chosen but a game is open: hidden until it closes
+bool g_start_nothing     = false; // the last start played nothing on purpose (lift the black at once)
+char g_play_path[512]    = {};    // what plays
+char g_uhd_name[256]     = {};    // the 4K clip's file name (its stream address)
+
+void begin_swap(const char* path);
+
+// fast.txt: "^<path>\t<file name>\t" for every 4K clip.
+bool uhd_lookup(const char* path, char* name, size_t nn, char* copy, size_t cn) {
+	FILE* f = fopen("/system_tmp/liveshell/fast.txt", "r");
+	if (f == nullptr) {
+		return false;
+	}
+	char line[1400];
+	bool found = false;
+	while (!found && fgets(line, sizeof(line), f) != nullptr) {
+		line[strcspn(line, "\r\n")] = 0;
+		char* tab1 = line[0] == '^' ? strchr(line, '\t') : nullptr;
+		if (tab1 == nullptr) {
+			continue;
+		}
+		*tab1 = 0;
+		if (strcmp(line + 1, path) != 0) {
+			continue;
+		}
+		char* tab2 = strchr(tab1 + 1, '\t');
+		if (tab2 != nullptr) {
+			*tab2 = 0;
+		}
+		snprintf(name, nn, "%s", tab1 + 1);
+		snprintf(copy, cn, "%s", tab2 != nullptr ? tab2 + 1 : "");
+		found = true;
+	}
+	fclose(f);
+	return found;
+}
+
+// A game is open: in front, or still running in the background (the payload's check, every second).
+bool game_alive() {
+	FILE* f = fopen("/system_tmp/liveshell/gamealive.txt", "r");
+	if (f == nullptr) {
+		return false;
+	}
+	const int c = fgetc(f);
+	fclose(f);
+	return c == '1';
+}
+
+// The LiveShell window is in front (the payload's check, every second): the video behind it is paused.
+bool window_open() {
+	FILE* f = fopen("/system_tmp/liveshell/window.txt", "r");
+	if (f == nullptr) {
+		return false;
+	}
+	const int c = fgetc(f);
+	fclose(f);
+	return c == '1';
+}
+
+// A 4K clip that cannot play right now: a game is open (it hides; the game's art shows).
+bool uhd_blocked(const char* path) {
+	char name[256], copy[512];
+	return uhd_lookup(path, name, sizeof(name), copy, sizeof(copy)) && game_alive();
+}
+
+// A field by its name, or with Sony's leading underscore.
+bool set_option_field(Obj klass, Obj obj, const char* name, void* value) {
+	Obj f = mono_class_get_field_from_name(klass, name);
+	if (f == nullptr) {
+		char alt[64];
+		snprintf(alt, sizeof(alt), "_%s", name);
+		f = mono_class_get_field_from_name(klass, alt);
+	}
+	if (f == nullptr) {
+		wp_log("4k: no field %s in CreateOptionParam", name);
+		return false;
+	}
+	mono_field_set_value(obj, f, value);
+	return true;
+}
 
 int start_own_player() {
 	Obj pui   = open_image("/system_ex/common_ex/lib/Sce.PlayStation.PUI.dll");
@@ -780,7 +878,7 @@ int start_own_player() {
 	}
 	g_videoview_class = view_class;
 
-	Obj     uri          = mono_string_new(g_domain, g_video_path);
+	Obj     uri          = mono_string_new(g_domain, g_play_path[0] != 0 ? g_play_path : g_video_path);
 	Obj     content_type = mono_string_new(g_domain, "video/mp4");
 	Obj     user_agent   = mono_string_new(g_domain, "");
 	// coreType BE, playback, 1920x1080 output, canvas, FullHD decoder (ShellUI gets no UHD decoder;
@@ -791,9 +889,34 @@ int start_own_player() {
 	void*   create_args[12] = {uri,            &core_type,     &create_mode,  &frame_size,
 	                           &render_buffer,  &core_resource, content_type,  &on_active,
 	                           &on_inactive,    &handler_mode,  user_agent,    &device_id};
-	Obj create_opt = construct_pinned(
-	    create_class, mono_class_get_method_from_name(create_class, ".ctor", 12),
-	    create_args, "CreateOptionParam");
+	Obj create_opt = nullptr;
+	if (g_play_uhd) {
+		// 4K: Sony's parameterless ctor (its defaults), then only these four.
+		create_opt = construct_pinned(create_class, mono_class_get_method_from_name(create_class, ".ctor", 0), nullptr,
+		                              "CreateOptionParam()");
+		if (create_opt == nullptr) {
+			wp_log("4k: no parameterless CreateOptionParam ctor");
+			return 42;
+		}
+		char address[400];
+		int at = snprintf(address, sizeof(address), "http://127.0.0.1:9050/uhd/");
+		for (const char* c = g_uhd_name; *c != 0 && at < static_cast<int>(sizeof(address)) - 4; ++c) {
+			const unsigned char u = static_cast<unsigned char>(*c);
+			at += isalnum(u) || u == '-' || u == '_' || u == '.' ? snprintf(address + at, 2, "%c", u)
+			                                                     : snprintf(address + at, 4, "%%%02X", u);
+		}
+		Obj stream = mono_string_new(g_domain, address);
+		int mode = 1, fb = 1, res = 4; // Playback, 1920x1080 output, UHD decoder
+		set_option_field(create_class, create_opt, "uri", stream);
+		set_option_field(create_class, create_opt, "createMode", &mode);
+		set_option_field(create_class, create_opt, "frameBufferSize", &fb);
+		set_option_field(create_class, create_opt, "coreResourceType", &res);
+		wp_log("4k: %s over %s (UHD decoder)", g_video_path, address);
+	} else {
+		create_opt = construct_pinned(
+		    create_class, mono_class_get_method_from_name(create_class, ".ctor", 12),
+		    create_args, "CreateOptionParam");
+	}
 	if (create_opt == nullptr) {
 		return 42;
 	}
@@ -852,7 +975,7 @@ int start_own_player() {
 	}
 
 	// Before it starts: muted = the PS5's own music (a game's theme) is not cut off.
-	g_clip_silent = clip_is_silent(g_video_path);
+	g_clip_silent = clip_is_silent(g_play_path[0] != 0 ? g_play_path : g_video_path);
 	set_bgm_suppression(player_class, player, g_vol_req.load() == 0 || g_clip_silent);
 	// Sound from the very first frame as set: muted stays muted, otherwise it starts at 0 and fades
 	// in (sound_tick). Applied ~0.25 s late before, so a muted clip was heard for a moment (v11-16).
@@ -891,7 +1014,7 @@ void video_report() {
 	}
 	++g_boot_frames;
 
-	if (g_boot_frames % 120 == 60 && g_videoview_class != nullptr && g_boot_restarts < 2) {
+	if (g_boot_frames % 120 == 60 && g_boot_frames < 300 && g_videoview_class != nullptr && g_boot_restarts < 2) {
 		Obj pos = property_get(g_videoview_class, g_boot_player, "Position");
 		Obj dur = property_get(g_videoview_class, g_boot_player, "Duration");
 		wp_log("player: pos %llu dur %llu ms (frame %d)",
@@ -999,10 +1122,53 @@ void own_player_report() {
 		static int                frozen   = 0;
 		frozen   = pos == last_pos && !(dur > 0 && pos >= dur) ? frozen + 1 : 0;
 		last_pos = pos;
-		if (frozen >= 12 && !g_stalled) {
-			frozen    = 0;
-			g_stalled = true;
-			wp_log("watchdog: video frozen at %llu/%llu ms for 3 s, restarting it", pos, dur);
+		// A clip that never shows a frame (0 ms, e.g. a file this player cannot decode) was restarted every
+		// 3 s forever. 3 tries per clip, then it is left alone.
+		static char zero_clip[512] = {};
+		static int  zero_tries     = 0;
+		if (pos > 0) {
+			zero_tries = 0;
+		}
+		// Our window in front: Sony pauses the video behind it. No restart while it is open; when it closes,
+		// a video that is still paused plays on at once (it stayed frozen until the watchdog restarted it).
+		static bool win = false, win_resume = false;
+		static int  win_closed = -100000;
+		const bool  w = window_open();
+		if (w != win) {
+			win = w;
+			wp_log("window %s", w ? "in front: video paused behind it" : "closed");
+			if (!w) {
+				win_closed = g_own_frames;
+				win_resume = true;
+			}
+		}
+		if (win_resume && !win && g_own_frames - win_closed >= 30) {
+			win_resume = false;
+			if (frozen >= 1 && !(dur > 0 && pos >= dur)) {
+				const bool played = invoke(mono_class_get_method_from_name(g_videoview_class, "Play", 0), g_own_view, nullptr,
+				                           "VideoView.Play (window closed)");
+				wp_log("window closed: the paused video plays on (%s)", played ? "ok" : "failed");
+				frozen = 0;
+			}
+		}
+		if (g_hidden || g_tick - g_hide_changed < 180 || win || g_own_frames - win_closed < 180) {
+			frozen = 0; // paused on purpose (hidden, or behind our window): that is no freeze
+		}
+		if (frozen >= (g_play_uhd ? 24 : 12) && !g_stalled) { // a 4K stream: 6 s (it was restarted while fine)
+			frozen = 0;
+			if (!(pos == 0 && strcmp(zero_clip, g_video_path) == 0 && zero_tries >= 3)) {
+				if (pos == 0) {
+					if (strcmp(zero_clip, g_video_path) != 0) {
+						snprintf(zero_clip, sizeof(zero_clip), "%s", g_video_path);
+						zero_tries = 0;
+					}
+					if (++zero_tries >= 3) {
+						wp_log("watchdog: %s never shows a frame - not restarted any more", g_video_path);
+					}
+				}
+				g_stalled = true;
+				wp_log("watchdog: video frozen at %llu/%llu ms for 3 s, restarting it", pos, dur);
+			}
 		}
 		if (at_end >= 3) {
 			at_end = 0;
@@ -1015,7 +1181,7 @@ void own_player_report() {
 		}
 	}
 
-	if (g_own_logs >= 15 || g_own_frames % 120 != 0) {
+	if (g_own_logs >= 2 || g_own_frames % 120 != 0) { // twice: it plays and moves on
 		return;
 	}
 	++g_own_logs;
@@ -1062,7 +1228,9 @@ void log_properties(Obj klass, const char* label) {
 			}
 			n += static_cast<size_t>(w);
 		}
-		wp_log("props %s (level %p): %s", label, k, line);
+		if (kProbeLogs) {
+			wp_log("props %s (level %p): %s", label, k, line);
+		}
 	}
 }
 
@@ -1083,7 +1251,9 @@ void log_methods(Obj klass, const char* label) {
 		}
 		n += static_cast<size_t>(w);
 	}
-	wp_log("methods %s: %s", label, line);
+	if (kProbeLogs) {
+		wp_log("methods %s: %s", label, line);
+	}
 }
 
 // Every class in the BGLayer assembly (type-definition table; row 1 is <Module>).
@@ -1379,7 +1549,9 @@ void log_fields(Obj klass, const char* label) {
 		}
 		n += static_cast<size_t>(w);
 	}
-	wp_log("fields %s: %s", label, line);
+	if (kProbeLogs) {
+		wp_log("fields %s: %s", label, line);
+	}
 }
 
 // Where does ShellUI keep "which layer / app is in front"? Full member lists of the candidates.
@@ -1442,7 +1614,9 @@ void probe_bglayer() {
 			}
 			n += static_cast<size_t>(w);
 		}
-		wp_log("props %s: %s", name, line);
+		if (kProbeLogs) {
+			wp_log("props %s: %s", name, line);
+		}
 	}
 }
 
@@ -1962,6 +2136,10 @@ std::atomic<int> g_menus_req{0}; // 0 show in menus, 1 hide in menus
 constexpr const char* kStoreOnlyFile = "/system_tmp/liveshell/storeonly.txt";
 std::atomic<bool> g_store_only{false}; // PS Store only: the video shows only on the Store tile
 bool              g_tile_hide = false;  // Store only + another tile highlighted: video faded out
+bool              g_pergame_hide = false; // Videos per game only + a tile without its own video: faded out
+bool              g_pergame_load = false; // Videos per game only + its clip not loaded yet: black until it is
+bool              g_pergame_dark = false; // Videos per game only, onto a tile without a video: black, then its art
+bool fast_lookup(const char* tid, char* out, size_t n); // below, with the fast switch
 Obj  g_focus_field  = nullptr;
 Obj  g_focus_vtable = nullptr;
 int  g_shellapp_val = -1;
@@ -1984,6 +2162,21 @@ char  g_switch_path[512] = {};
 // Fast per-game switch (test v11-8): ShellUI picks the highlighted game's clip itself.
 char  g_fast_tid[16] = {};
 int   g_fast_at      = -1; // tick the highlighted tile changed (-1 = decided)
+bool  g_self_started = false; // started on the return from a game, the payload has not confirmed yet
+
+// "Hide while a game is open" (option): the payload writes 1 while a game is open in the background;
+// then ShellUI does not start a video by itself (return from a game, tile move) - Sony's art stays.
+bool game_open_hold() {
+	FILE* f = fopen("/system_tmp/liveshell/gameopen.txt", "r");
+	int   v = 0;
+	if (f != nullptr) {
+		if (fscanf(f, "%d", &v) != 1) {
+			v = 0;
+		}
+		fclose(f);
+	}
+	return v == 1;
+}
 void  stop_video();
 int   start_video();
 
@@ -2308,14 +2501,49 @@ void focus_tick() {
 	const bool game    = g_game_val >= 0 && focus == g_game_val;
 	// PS Store only: every tile but the Store (NPXS40047) shows Sony's own background; the video keeps
 	// playing hidden and muted, so the Store tile gets it back at once (no restart, no black).
-	g_tile_hide        = g_store_only.load() && strcmp(g_fast_tid, "NPXS40047") != 0;
+	// Videos per game only: a tile without its own video ("*=hide") hides the running one the same way, and a tile
+	// whose clip is not loaded yet stays hidden until its swap is done (it showed the OLD clip's paused frame).
+	static char hide_tid[32]   = {1, 0};
+	static char tile_clip[512] = {};
+	static bool pg_on          = false;
+	if (strcmp(hide_tid, g_fast_tid) != 0 || g_tick % 60 == 0) {
+		snprintf(hide_tid, sizeof(hide_tid), "%s", g_fast_tid);
+		char p[512] = {};
+		fast_lookup(g_fast_tid, p, sizeof(p)); // a clip, "hide", or "-" (another folder: the payload switches it)
+		snprintf(tile_clip, sizeof(tile_clip), "%s", p);
+		char m[512];
+		pg_on = fast_lookup("", m, sizeof(m)) && strcmp(m, "hide") == 0; // the main entry: "*=hide"
+	}
+	{
+		const bool was      = g_pergame_hide;
+		const bool was_load = g_pergame_load;
+		const bool other    = pg_on && tile_clip[0] != 0 && strcmp(tile_clip, g_video_path) != 0;
+		// No video here: black first (~0.4 s: Sony's art behind us is still the previous tile's, its crossfade
+		// lags), then our layers fade out from black into this tile's art.
+		static bool pg_want_hide  = false;
+		static int  pg_hide_since = 0;
+		const bool  want_hide     = other && strcmp(tile_clip, "hide") == 0;
+		if (want_hide && !pg_want_hide) {
+			pg_hide_since = g_tick;
+		}
+		pg_want_hide   = want_hide;
+		g_pergame_hide = want_hide && (g_fade >= 1.0f || g_tick - pg_hide_since >= 24);
+		g_pergame_dark = want_hide && g_fade < 1.0f;
+		g_pergame_load      = other && strcmp(tile_clip, "hide") != 0;  // its own video comes: black until it draws
+		if (was != g_pergame_hide || was_load != g_pergame_load) {
+			wp_log("per game only: %s %s", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)",
+			       !g_pergame_hide ? (g_pergame_load ? "loads its video - black until it draws" : "shows its video")
+			                       : "has no video - hidden");
+		}
+	}
+	g_tile_hide        = (g_store_only.load() && strcmp(g_fast_tid, "NPXS40047") != 0) || g_pergame_hide;
 	const bool hide    = game || (g_menus_req.load() == 1 && g_is_settings && view != nullptr) ||
 	                  (g_tile_hide && view != nullptr);
 	if (hide != g_hidden) {
 		g_hidden       = hide;
 		g_hide_changed = g_tick;
 		wp_log("layers %s (%s)", hide ? "fading out" : "fading in",
-		       game ? "game" : g_tile_hide ? "not the PS Store" : hide ? "settings" : "home");
+		       game ? "game" : g_pergame_hide ? "no video of its own" : g_tile_hide ? "not the PS Store" : hide ? "settings" : "home");
 	}
 	if (view != g_hidden_view) {
 		g_hidden_view = view;
@@ -2334,16 +2562,31 @@ void focus_tick() {
 	// showed until the video restarted (test 29). Hold black instead until the video is back
 	// (max ~5 s), then cross-fade into it (or, with no video coming, into Sony's background).
 	if (game) {
-		g_was_game = true;
+		if (g_self_started && video_active()) {
+			// started on the return from a game, but the payload never said the game was closed: the game
+			// is in front again -> stop it (no video behind a game: it needs the decoder)
+			wp_log("game in front again before the payload's check: stopping the video started here");
+			stop_video();
+			write_status("stopped");
+		}
+		g_self_started = false;
+		g_was_game     = true;
 	} else if (g_was_game) {
 		g_was_game = false;
-		if (view == nullptr) {
+		// "Hide while a game is open" holds the video back: no video is coming, so no black hold either -
+		// the game's art shows at once (user: it stayed black until moving around).
+		if (view == nullptr && !game_open_hold() && !uhd_blocked(g_video_path)) {
 			g_hold_black     = true;
 			g_hold_start     = g_tick;
 			g_hold_view_tick = -1;
 			if (g_dim_panel == nullptr && !g_dim_tried) {
 				create_dim_panel();
 			}
+			// Start the video right here, as a tile move does (fast_tick: nothing playing -> start the
+			// tile's clip): waiting for the payload's game check kept the screen black ~5 s (test 25).
+			g_fast_at      = g_tick - 12;
+			g_self_started = true;
+			wp_log("back from a game: starting the video here");
 		}
 	}
 	// Starting a game: fade to black (~0.35 s), hold black (~1.5 s) while the game starts, then
@@ -2351,6 +2594,11 @@ void focus_tick() {
 	// Starting a game: no black any more (user, test 30): our layers fade out slowly (below) and
 	// the game's own launch background shows through.
 	float to_black = 0.0f;
+	if (g_on_fallback && g_tick % 60 == 0 && g_switch_at < 0 && g_video_path[0] != 0 && !game_alive()) {
+		g_on_fallback = false;
+		wp_log("4k: the game closed - back to the 4K clip");
+		begin_swap(g_video_path);
+	}
 	if (g_switch_at >= 0 && !g_xfade_broken && g_xfade_tick < 0 && g_own_view != nullptr) {
 		g_switch_at = -1;
 		xfade_start();
@@ -2401,6 +2649,9 @@ void focus_tick() {
 				wp_log("shown: first frames %d ms after the start", (g_tick - g_hold_start) * 1000 / 60);
 			}
 		}
+		if (g_hold_view_tick < 0 && g_start_nothing) {
+			g_hold_view_tick = g_tick; // 4K + a game open: hidden (the game's art), not black
+		}
 		if (g_hold_view_tick < 0 && g_tick - g_hold_start > 300) {
 			g_hold_view_tick = g_tick; // no video came: let Sony's background show after all
 		}
@@ -2415,6 +2666,9 @@ void focus_tick() {
 				to_black      = 1.0f - k * k * (3.0f - 2.0f * k);
 			}
 		}
+	}
+	if (g_pergame_load || g_pergame_dark) {
+		to_black = 1.0f; // per game only: the tile's clip is loading, or black before (and while) fading to its art
 	}
 	if (to_black != g_black_now && g_dim_panel != nullptr && g_dim_class != nullptr) {
 		g_black_now   = to_black;
@@ -2461,6 +2715,9 @@ void focus_tick() {
 	const float vi      = xfading ? g_view_in * g_view_in * (3.0f - 2.0f * g_view_in)
 	                              : 1.0f - (1.0f - g_view_in) * (1.0f - g_view_in) * (1.0f - g_view_in);
 	float       view_op = next * vi;
+	if (g_pergame_load || g_pergame_dark) {
+		view_op = 0.0f; // per game only, black over the art: the paused clip under it must not show through
+	}
 	if (view != nullptr && view_op != g_view_op) {
 		const bool was_full = g_view_op >= 1.0f || g_view_op < 0.0f;
 		g_view_op           = view_op;
@@ -2608,6 +2865,8 @@ const char* prop_text(Obj obj, const char* name) {
 	return u != nullptr ? u : "?";
 }
 
+std::string title_in(const char* t); // below (a title id inside Sony's text)
+
 uint64_t SetBg_Hook(Obj self, Obj param) {
 	if (param != nullptr) {
 		if (g_setbg_class == nullptr) {
@@ -2616,12 +2875,15 @@ uint64_t SetBg_Hook(Obj self, Obj param) {
 		// The highlighted tile's art: /user/appmeta/<TID>/pic0.dds or /user/app/<TID>/sce_sys/pic0.dds;
 		// non-game tiles use bg_hub_default. Tell the payload which game is highlighted.
 		const char* img = prop_text(param, "NextImageUri");
-		if (img != nullptr && img[0] != 0) {
-			std::string tid;
+		std::string tid;
+		bool        any = img != nullptr && img[0] != 0;
+		if (any) {
+			// The id right after the folder, or a step further: games on extended storage keep theirs in
+			// /user/appmeta/external/CUSA12345/ (that gave "external/" before, issue #3).
 			for (const char* key : {"/user/appmeta/", "/user/app/"}) {
 				const char* p = strstr(img, key);
 				if (p != nullptr && tid.empty()) {
-					tid.assign(p + strlen(key), strnlen(p + strlen(key), 9));
+					tid = title_in(p + strlen(key));
 				}
 			}
 			// The PlayStation Store tile (NPXS40047, from app.db) shows Sony's bg_NPXS40047 texture:
@@ -2629,6 +2891,23 @@ uint64_t SetBg_Hook(Obj self, Obj param) {
 			if (tid.empty() && strstr(img, "bg_NPXS40047") != nullptr) {
 				tid = "NPXS40047";
 			}
+		}
+		// Apps with only a pic0.png (homebrew like Overdrive, no pic0.dds) were not recognised (user,
+		// v1.2): look for a title id in Sony's other picture fields too. Only a real id counts: tiles
+		// with no id anywhere (media apps) behave exactly as in v1.1 (the first try switched them).
+		if (tid.empty()) {
+			for (const char* field : {"NextBlurImageUri", "NextFallbackImageUri", "NextOverlayImageUri"}) {
+				const char* v = prop_text(param, field);
+				if (tid.empty() && v != nullptr && v[0] != 0 && v[0] != '?' && strstr(v, "bg_hub") == nullptr &&
+				    strstr(v, "bg_NPXS") == nullptr) {
+					tid = title_in(v);
+				}
+			}
+			if (!tid.empty()) {
+				any = true;
+			}
+		}
+		if (any) {
 			static std::string last = "?";
 			if (tid != last) {
 				last = tid;
@@ -2835,6 +3114,21 @@ void stop_video() {
 }
 
 int start_video() {
+	// 4K clip: the UHD stream; with a game open nothing (hidden, the game's art shows) until it closes.
+	char name[256] = {}, copy[512] = {};
+	g_play_uhd = g_on_fallback = g_start_nothing = false;
+	snprintf(g_play_path, sizeof(g_play_path), "%s", g_video_path);
+	if (!g_mode_sony && uhd_lookup(g_video_path, name, sizeof(name), copy, sizeof(copy))) {
+		if (!game_alive()) {
+			g_play_uhd = true;
+			snprintf(g_uhd_name, sizeof(g_uhd_name), "%s", name);
+		} else {
+			g_on_fallback = g_start_nothing = true;
+			wp_log("4k: hidden while a game is open (%s)", g_video_path);
+			write_status("stopped");
+			return 0;
+		}
+	}
 	write_status("starting");
 	const int rc = g_mode_sony ? start_video_sony() : start_own_player();
 	wp_log("video: start result %d (%s)", rc, g_video_path);
@@ -2889,7 +3183,7 @@ bool fast_lookup(const char* tid, char* out, size_t n) {
 	if (!found) {
 		snprintf(out, n, "%s", main_clip);
 	}
-	return out[0] == '/' || strcmp(out, "off") == 0; // "off" = no video on this tile ("Main video" off)
+	return out[0] == '/' || strcmp(out, "off") == 0 || strcmp(out, "hide") == 0; // off = wallpaper off, hide = per game only
 }
 
 // Restart a frozen clip (watchdog above) with the normal swap, on the home screen only (a game in
@@ -2916,6 +3210,9 @@ void fast_tick() {
 	if (g_stopping || !fast_lookup(g_fast_tid, path, sizeof(path))) {
 		return;
 	}
+	if (strcmp(path, "hide") == 0) { // Videos per game only, no clip of its own: hidden (focus tick), nothing stops
+		return;
+	}
 	if (strcmp(path, "off") == 0) { // "Main video" off and no clip of its own: fade to Sony's background
 		if (video_active() && !(g_switch_at >= 0 && g_switch_path[0] == 0)) {
 			wp_log("fast: %s has no video, stopping", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)");
@@ -2928,7 +3225,15 @@ void fast_tick() {
 	}
 	if (!video_active()) { // nothing playing (a tile without video before): start it right here
 		struct stat st0 {};
-		if (g_switch_at < 0 && stat(path, &st0) == 0) {
+		if (g_switch_at < 0 && stat(path, &st0) == 0 && !game_open_hold() && uhd_blocked(path)) {
+			// 4K + a game open: hidden; nothing to start on any tile move; the game's end brings it back.
+			if (strcmp(path, g_video_path) != 0 || !g_on_fallback) {
+				snprintf(g_video_path, sizeof(g_video_path), "%s", path);
+				g_on_fallback = true;
+				wp_log("4k: %s hidden while a game is open", path);
+			}
+			g_start_nothing = true; // nothing comes: no black hold
+		} else if (g_switch_at < 0 && stat(path, &st0) == 0 && !game_open_hold()) {
 			wp_log("fast: %s, starting %s", g_fast_tid[0] != 0 ? g_fast_tid : "(no game)", path);
 			snprintf(g_video_path, sizeof(g_video_path), "%s", path);
 			start_video();
@@ -3003,7 +3308,8 @@ void handle_requests() {
 		pthread_mutex_lock(&g_req_lock);
 		memcpy(g_req_take, g_req_line, sizeof(g_req_take));
 		pthread_mutex_unlock(&g_req_lock);
-		g_have_req = true;
+		g_have_req     = true;
+		g_self_started = false; // the payload has spoken
 		wp_log("request: '%s'", g_req_take);
 	}
 	if (!g_have_req) {
@@ -3024,6 +3330,11 @@ void handle_requests() {
 			return;
 		}
 		// nothing playing: normal path below
+	}
+	if (!g_stopping && video_active() && g_req_take[0] == '/' && g_switch_at < 0 &&
+	    strcmp(g_req_take, g_video_path) == 0) {
+		g_have_req = false; // already playing it (e.g. started on the return from a game): no restart
+		return;
 	}
 	if (!g_stopping && video_active()) {
 		stop_video();
@@ -3125,6 +3436,18 @@ void* wallpaper_thread(void*) {
 	sleep(3); // was 5: a quicker first picture
 	char seen[512];
 	read_request_line(seen, sizeof(seen));
+	// PS Store only, read BEFORE the first clip starts: the loop below only reads it every 0.3 s, so
+	// the video showed on the highlighted tile for a moment after loading the ELF (user, v1.2).
+	// Start hidden then; the Store tile fades it in as usual.
+	if (FILE* f = fopen(kStoreOnlyFile, "r")) {
+		int on = 0;
+		if (fscanf(f, "%d", &on) == 1 && on == 1) {
+			g_store_only.store(true);
+			g_fade = 1.0f;
+			wp_log("PS Store only: on from the start (video starts hidden)");
+		}
+		fclose(f);
+	}
 	if (guard_exists()) {
 		wp_log("video: last attempt did not survive (%s still there)", kGuardFile);
 	} else if (!choose_video()) {
@@ -3295,7 +3618,35 @@ extern "C" int main(int argc, char const* argv[]) {
 	if (!InstallDetour(update_addr, reinterpret_cast<void*>(&Update_Hook),
 	                   reinterpret_cast<void**>(&g_update_orig)) ||
 	    g_update_orig == nullptr) {
-		return fail("LiveShell Engine could not start (hook failed)", 4);
+		// Another tool (a HEN or toolbox) hooks the same Application.Update and, loaded first, its jump
+		// sits at the start: a second detour there fails ("hook failed", v1.1 next to OnionHEN; issue #8).
+		// Follow that jump and hook the function it leads to: LiveShell -> that tool -> Sony.
+		g_update_orig = nullptr;
+		const uint64_t page = update_addr & ~static_cast<uint64_t>(0x3fff);
+		if (sceKernelMprotect != nullptr) {
+			(void)sceKernelMprotect(reinterpret_cast<void*>(page), 0x8000, 0x7); // execute-only code: readable first
+		}
+		const uint8_t* b = reinterpret_cast<const uint8_t*>(update_addr);
+		wp_log("Application.Update starts with %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+		       b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13]);
+		uint64_t next = 0;
+		if (b[0] == 0xe9) { // jmp rel32
+			int32_t rel = 0;
+			memcpy(&rel, b + 1, 4);
+			next = update_addr + 5 + static_cast<int64_t>(rel);
+		} else if (b[0] == 0xff && b[1] == 0x25 && b[2] == 0 && b[3] == 0 && b[4] == 0 && b[5] == 0) { // jmp [rip]
+			memcpy(&next, b + 6, 8);
+		} else if (b[0] == 0x48 && b[1] == 0xb8 && b[10] == 0xff && b[11] == 0xe0) { // mov rax, imm64; jmp rax
+			memcpy(&next, b + 2, 8);
+		}
+		if (next == 0 || !InstallDetour(next, reinterpret_cast<void*>(&Update_Hook),
+		                                reinterpret_cast<void**>(&g_update_orig)) ||
+		    g_update_orig == nullptr) {
+			wp_log("Application.Update: no other hook to chain after (next %#lx)", static_cast<unsigned long>(next));
+			return fail("LiveShell Engine could not start (hook failed)", 4);
+		}
+		wp_log("Application.Update already hooked by another tool: chained after it at %#lx",
+		       static_cast<unsigned long>(next));
 	}
 	wp_log("PUI.Application.Update hooked");
 	g_step.store("hooked, waiting for UI ticks");

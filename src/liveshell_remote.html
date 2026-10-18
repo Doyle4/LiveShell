@@ -19,14 +19,23 @@ button:focus-visible{box-shadow:0 0 0 2px var(--text)}
 .brand img{width:30px;height:30px;border-radius:7px}
 .brand small{font-size:12px;font-weight:600;color:#000;background:var(--text);border-radius:999px;padding:2px 8px;letter-spacing:0}
 .power{margin-left:auto;display:flex;align-items:center;gap:10px;padding:6px 6px 6px 14px;border-radius:999px;background:var(--card);font-size:14px;color:var(--dim)}
-.sw{width:40px;height:24px;border-radius:12px;background:var(--chip);box-shadow:inset 0 0 0 1px var(--line);position:relative;transition:background .2s}
+.sw{flex:none;width:40px;height:24px;border-radius:12px;background:var(--chip);box-shadow:inset 0 0 0 1px var(--line);position:relative;transition:background .2s}
 .sw:after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--dim);transition:transform .2s,background .2s}
 .power.on{color:var(--text)}
-.power.on .sw{background:var(--text)}
-.power.on .sw:after{transform:translateX(16px);background:#000}
+.on>.sw{background:var(--text)}
+.on>.sw:after{transform:translateX(16px);background:#000}
+
+/* tabs */
+.tabs{display:flex;gap:6px;padding:4px;border-radius:999px;background:var(--card);margin-top:4px}
+.tab{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;height:40px;border-radius:999px;font-size:15px;font-weight:600;color:var(--dim)}
+.tab svg{width:17px;height:17px;flex:none}
+.tab svg,.tab span{pointer-events:none}
+@media (max-width:420px){.tabs{border-radius:16px}.tab{flex-direction:column;gap:2px;height:50px;border-radius:12px;font-size:11px}.tab svg{width:18px;height:18px}}
+.tab.on{background:var(--text);color:#000}
 
 h2{display:flex;align-items:baseline;gap:8px;font-size:19px;font-weight:600;margin:24px 0 12px}
 h2 span{font-size:15px;color:var(--dim);font-weight:400}
+.hint{font-size:14px;color:var(--dim);margin:-4px 0 12px}
 
 /* upload card */
 .drop{display:flex;align-items:center;gap:18px;padding:20px 22px;border-radius:14px;background:var(--card);cursor:pointer;transition:background .15s,box-shadow .15s}
@@ -46,7 +55,7 @@ h2 span{font-size:15px;color:var(--dim);font-weight:400}
 
 /* video cards, same as the PS5 window */
 .list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
-.card{position:relative;display:flex;flex-direction:column;justify-content:flex-end;height:160px;padding:16px 18px;border-radius:14px;background:var(--card);overflow:hidden}
+.card{position:relative;display:flex;flex-direction:column;justify-content:flex-end;min-height:160px;padding:56px 18px 16px;border-radius:14px;background:var(--card);overflow:hidden}
 .card .art{position:absolute;right:-6px;top:-28px;font-size:150px;font-weight:800;line-height:1;letter-spacing:-6px;color:rgba(255,255,255,.06);pointer-events:none}
 .card.on{background:var(--text);color:#000}
 .card.on .art{color:rgba(0,0,0,.08)}
@@ -54,7 +63,8 @@ h2 span{font-size:15px;color:var(--dim);font-weight:400}
 .badge i{width:7px;height:7px;border-radius:50%;background:#000;animation:breathe 2.4s ease-in-out infinite}
 @keyframes breathe{50%{opacity:.3}}
 .name{position:relative;font-size:18px;font-weight:700;letter-spacing:-.2px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.sub{position:relative;margin-top:5px;display:flex;gap:12px;font-size:13px;color:var(--dim)}
+.sub{position:relative;margin-top:5px;display:flex;gap:12px;font-size:13px;color:var(--dim);min-width:0}
+.sub span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card.on .sub{color:#555}
 .acts{position:relative;display:flex;gap:8px;margin-top:12px}
 .act{height:34px;padding:0 14px;border-radius:999px;background:var(--chip);font-size:13px;font-weight:600}
@@ -62,8 +72,103 @@ h2 span{font-size:15px;color:var(--dim);font-weight:400}
 .card.on .act{background:rgba(0,0,0,.08);color:#000}
 .act.armed{background:var(--text);color:#000}
 .card.on .act.armed{background:#000;color:#fff}
+.fav{position:absolute;right:12px;top:12px;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:999px;color:var(--dim);background:rgba(255,255,255,.06)}
+.fav.on{color:#ff4d6d}
+.card.on .fav{color:#555;background:rgba(0,0,0,.08)}
+.card.on .fav.on{color:#e0244a}
+.pc{position:absolute;right:56px;top:19px;display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%}
+.pc.ok{color:#3ddc84;background:rgba(61,220,132,.12)}
+.pc.bad{color:#ff5c5c;background:rgba(255,92,92,.14)}
+.card.on .pc.ok{color:#0a7a3e;background:rgba(10,122,62,.14)}
+.card.on .pc.bad{color:#c62828;background:rgba(198,40,40,.14)}
+.sub .why{color:#ff7b7b;white-space:normal}
+.card.on .sub .why{color:#c62828}
 .empty{color:var(--dim);font-size:15px;padding:20px;border-radius:14px;background:var(--card)}
-.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--text);color:#000;font-weight:600;padding:10px 22px;border-radius:999px;font-size:14px;display:none;max-width:90vw;text-align:center}
+
+/* library rows */
+.rows{display:flex;flex-direction:column;gap:8px}
+.gr{display:flex;align-items:center;gap:14px;width:100%;padding:10px 14px 10px 10px;border-radius:14px;background:var(--card);min-width:0}
+.gr.on{background:var(--text);color:#000}
+.gico{flex:none;width:52px;height:52px;border-radius:10px;background:var(--chip);object-fit:cover}
+.gr .info{flex:1;min-width:0}
+.gr .name{font-size:16px;-webkit-line-clamp:1}
+.gr .sub{font-size:13px}
+.gr.on .sub{color:#555}
+.tag{flex:none;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:5px 10px;border-radius:999px;background:var(--chip);color:var(--text)}
+.gr.on .tag{background:#000;color:#fff}
+.search{width:100%;height:44px;border-radius:12px;border:0;background:var(--card);color:var(--text);font:inherit;font-size:15px;padding:0 16px;margin-bottom:12px}
+.search::placeholder{color:var(--faint)}
+
+/* cards and chips */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+.chip{padding:7px 14px;border-radius:999px;background:var(--card);color:#c8c8c8;font-size:14px;font-weight:600}
+.chip.on{background:var(--text);color:#000}
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.scard{display:flex;flex-direction:column;border-radius:14px;background:var(--card);overflow:hidden}
+.scard .pic{position:relative;width:100%;padding-top:56.25%;background:#0c0c0c;overflow:hidden}
+.scard .pic img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;display:block}
+.scard .meta{padding:10px 12px 12px}
+.scard .nm{font-size:15px;font-weight:700;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.5em}
+.scard .sb{margin-top:4px;font-size:12px;color:var(--dim)}
+.scard .act{margin-top:10px;width:100%;height:34px;border-radius:999px;background:var(--chip);font-size:13px;font-weight:700;text-align:center}
+.scard .act.dl{background:var(--text);color:#000}
+.scard .act.use{background:#2a6df4;color:#fff}
+.scard .act.inuse{background:transparent;box-shadow:inset 0 0 0 1.5px var(--line);color:var(--dim)}
+.scard .bar{position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(0,0,0,.5)}
+.scard .bar i{display:block;height:100%;background:var(--text)}
+.sq{display:block;width:100%;max-width:460px;box-sizing:border-box;padding:10px 16px;border-radius:999px;border:0;background:var(--card);color:var(--text);font-size:16px;margin:0 0 12px;outline:none;-webkit-appearance:none}
+.sq:focus{box-shadow:0 0 0 2px var(--text)}
+.pg{padding:0 9px}.pg.arr{font-size:19px}.pgdot{align-self:center;color:var(--dim);padding:0 2px}
+.chips.subs{margin-top:-4px;padding-top:12px;border-top:1px solid var(--line)}
+.chips.subs:empty{display:none}
+.subs .chip{font-size:13px;padding:6px 12px}
+.scard .pic.nopic{background:linear-gradient(135deg,#1d1d1d,#0c0c0c)}
+.scard .pic.nopic:after{content:'Preview unavailable';position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;color:var(--faint);font-size:13px;font-weight:600}
+.pages{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:16px 0 4px}
+.pg{min-width:38px;height:38px;border-radius:999px;background:var(--card);font-size:14px;font-weight:700;text-align:center}
+.pg.on{background:var(--text);color:#000}
+@media (max-width:600px){.sgrid{grid-template-columns:1fr 1fr;gap:10px}.scard .nm{font-size:14px}}
+
+/* settings */
+.opts{display:flex;flex-direction:column;gap:8px}
+.opt{display:flex;align-items:center;gap:16px;width:100%;padding:16px 18px;border-radius:14px;background:var(--card)}
+.opt>div{flex:1;min-width:0}
+.opt b{display:block;font-size:16px;font-weight:600}
+.opt span.d{display:block;margin-top:3px;font-size:13px;color:var(--dim)}
+.opt .tag{background:var(--text);color:#000}
+.ctl{padding:16px 18px;border-radius:14px;background:var(--card)}
+.ctl b{display:block;font-size:16px;font-weight:600;margin-bottom:10px}
+.ctl p{margin-top:10px;font-size:13px;color:var(--dim)}
+.segs{display:flex;gap:6px;flex-wrap:wrap}
+.seg{flex:1;min-width:52px;height:36px;border-radius:999px;background:var(--chip);text-align:center;font-size:14px;font-weight:600}
+.seg.on{background:var(--text);color:#000}
+.btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+.reset{height:40px;padding:0 18px;border-radius:999px;background:var(--card);font-size:14px;font-weight:600}
+.reset.armed{background:var(--text);color:#000}
+
+/* picker sheet */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:flex-end;justify-content:center;z-index:5}
+.sheet{width:100%;max-width:640px;max-height:86vh;overflow:auto;background:#0d0d0d;border-radius:18px 18px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -1px 0 var(--line)}
+.sheet h2{margin-top:0}
+.pick{display:flex;align-items:center;gap:12px;width:100%;padding:14px 16px;border-radius:12px;background:var(--card);margin-bottom:8px}
+.pick.on{background:var(--text);color:#000}
+.pick .info{flex:1;min-width:0}
+.pick .name{font-size:16px;-webkit-line-clamp:1}
+.pick.on .sub{color:#555}
+.pick.on .tag{background:#000;color:#fff}
+.pick.k4{opacity:.45}
+.hint.g4k{color:#ffb454}
+.opt.dis{opacity:.45}
+.res{display:inline-block;margin-left:8px;padding:1px 6px;border-radius:5px;font-size:10.5px;font-weight:700;letter-spacing:.5px;line-height:15px;vertical-align:2px;color:#cfcfcf;box-shadow:inset 0 0 0 1px rgba(255,255,255,.32)}
+.res.r4K{background:#fff;color:#000;box-shadow:none}
+.card.on .res{color:#333;box-shadow:inset 0 0 0 1px rgba(0,0,0,.35)}
+.card.on .res.r4K{background:#000;color:#fff;box-shadow:none}
+.snd{display:inline-flex;align-items:center;margin-left:6px;vertical-align:-2px;color:#cfcfcf}
+.snd.off{color:#6a6a6a}
+.card.on .snd{color:#333}
+.card.on .snd.off{color:#999}
+
+.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--text);color:#000;font-weight:600;padding:10px 22px;border-radius:999px;font-size:14px;display:none;max-width:90vw;text-align:center;z-index:9}
 
 /* phones */
 @media (max-width:600px){
@@ -78,6 +183,8 @@ h2 span{font-size:15px;color:var(--dim);font-weight:400}
  .sub{font-size:12px;gap:8px}
  .act{height:32px;padding:0 11px;font-size:12px}
  .drop{padding:16px}
+ .opt{padding:14px 15px}
+ .seg{min-width:44px;font-size:13px}
 }
 @media (max-width:360px){.list{grid-template-columns:1fr}}
 @media (prefers-reduced-motion:reduce){.badge i{animation:none}.sw,.sw:after,.drop{transition:none}}
@@ -86,46 +193,166 @@ h2 span{font-size:15px;color:var(--dim);font-weight:400}
  <div class="brand"><img src="/icon.png" alt="">LiveShell Engine<small>Remote</small></div>
  <button class="power" id="power"><span id="ptext">Wallpaper</span><span class="sw"></span></button>
 </div>
+<div class="tabs" id="tabs"><button class="tab on" data-t="videos"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span>Videos</span></button><button class="tab" data-t="games"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M4.5 4.5h7a3.5 3.5 0 0 1 3.4 4.3l-.7 2.9a1.7 1.7 0 0 1-2.9.8L9.9 11H6.1l-1.4 1.5a1.7 1.7 0 0 1-2.9-.8l-.7-2.9A3.5 3.5 0 0 1 4.5 4.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 7v2.4M3.8 8.2h2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10.6" cy="7.6" r=".9" fill="currentColor"/><circle cx="12" cy="9" r=".9" fill="currentColor"/></svg><span>Library</span></button><button class="tab" data-t="settings"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.5l1.3 1.8 2.2-.3.5 2.2 2 1-.9 2 .9 2-2 1-.5 2.2-2.2-.3L8 14.5l-1.3-1.8-2.2.3-.5-2.2-2-1 .9-2-.9-2 2-1 .5-2.2 2.2.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span>Settings</span></button></div>
 
+<div id="v-videos">
 <h2>Add videos</h2>
 <label class="drop" id="drop"><input type="file" id="file" accept="video/mp4,.mp4" multiple>
  <span class="ic"><svg width="22" height="22" viewBox="0 0 22 22"><path d="M11 15V4M6.5 8.5L11 4l4.5 4.5M4 15.5V18h14v-2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
- <div><b>Choose .mp4 files</b><span>Or drop them here. H.264 or HEVC (H.265), up to 1080p. 4K, AV1, VP9 and MPEG-4 do not play.</span></div></label>
+ <div><b>Choose .mp4 files</b><span>Or drop them here. H.264 or HEVC (H.265), up to 4K. AV1, VP9 and MPEG-4 do not play. 4K and 2K hide while a game is open.</span></div></label>
 <div class="jobs" id="jobs"></div>
-
 <h2>Your videos<span id="cnt"></span></h2>
+<p class="hint">Play sets the main video: it shows on every tile that has no video of its own.</p>
 <div class="list" id="list"></div>
+<div class="pages" id="vpages"></div>
+</div>
+
+<div id="v-games" style="display:none">
+<h2>Library<span id="gcnt"></span></h2>
+<p class="hint">Your games and apps. Tap one to give it its own video: it plays while that tile is highlighted, instead of the main video.</p>
+<p class="hint g4k" id="g4k" style="display:none">Your main video is <span class="mres">4K</span>, so videos per game are paused (it plays on every tile). Your picks are kept: they come back with a 1080p main video.</p>
+<input class="search" id="gsearch" type="search" placeholder="Search games and apps" autocomplete="off">
+<div class="rows" id="glist"><div class="empty">Loading your library...</div></div>
+</div>
+
+
+<div id="v-settings" style="display:none">
+<h2>Settings</h2>
+<div class="opts">
+ <button class="opt" id="o-pergame" onclick="pgOnly()"><div><b>Videos per game only</b><span class="d">Only games with their own video show one; every other tile keeps the PS5 background. No main video.</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-gamevideos" onclick="opt('gamevideos')"><div><b>Videos per game</b><span class="d">Games and apps play the video you gave them in Library. Off: every tile uses the main video (your choices are kept).</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-gamehide" onclick="opt('gamehide')"><div><b>Hide while a game is open</b><span class="d">With a game open in the background, the home screen keeps the game's own art. The video comes back when you close the game. 4K and 2K videos always hide while a game is open.</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-shuffle" onclick="opt('shuffle')"><div><b>Random video on start</b><span class="d">Each time LiveShell starts, it picks a different clip.</span></div><span class="sw"></span></button>
+</div>
+<h2>Home screen</h2>
+<div class="opts">
+ <button class="opt" id="o-menuhide" onclick="opt('menuhide')"><div><b>Hide in Settings</b><span class="d">Normal PS5 background in Settings and system apps.</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-storeonly" onclick="opt('storeonly')"><div><b>PS Store only</b><span class="d">The video shows only on the PlayStation Store tile. Other tiles keep the normal PS5 look.</span></div><span class="sw"></span></button>
+ <button class="opt" id="o-storeclip" onclick="openPicker('NPXS40047')" style="display:none"><div><b>PS Store video</b><span class="d" id="storeclipname">Main video</span></div><span class="tag">Change</span></button>
+ <button class="opt" id="o-parallax" onclick="opt('parallax')"><div><b>Parallax</b><span class="d">The video shifts a little as you move between games.</span></div><span class="sw"></span></button>
+</div>
+<h2>Sound</h2>
+<div class="ctl"><div class="segs" id="volctl"><button class="seg" data-v="0">Mute</button><button class="seg" data-v="25">25%</button><button class="seg" data-v="50">50%</button><button class="seg" data-v="75">75%</button><button class="seg" data-v="100">100%</button></div>
+ <p>For videos with sound. The PS5's own music goes quiet while one plays.</p></div>
+<h2>Picture</h2>
+<div class="opts">
+ <div class="ctl"><b>Dim</b><div class="segs" id="dimctl"><button class="seg" data-v="0">Off</button><button class="seg" data-v="25">25</button><button class="seg" data-v="50">50</button><button class="seg" data-v="60">60</button><button class="seg" data-v="70">70</button><button class="seg" data-v="80">80</button></div></div>
+ <div class="ctl"><b>Vignette</b><div class="segs look" data-l="2" data-k="vignette"><button class="seg" data-v="0">Off</button><button class="seg" data-v="1">Light</button><button class="seg" data-v="2">Strong</button></div></div>
+ <div class="ctl"><b>Haze</b><div class="segs look" data-l="3" data-k="haze"><button class="seg" data-v="0">Off</button><button class="seg" data-v="1">Light</button><button class="seg" data-v="2">Strong</button></div></div>
+</div>
+<div class="btns"><button class="reset" id="reset">Reset settings</button><button class="reset" id="shutdown">Shut down LiveShell</button></div>
+</div>
+
+<div class="modal" id="gm" style="display:none"><div class="sheet">
+ <h2 id="gmt">Background for this tile</h2>
+ <p class="hint">Pick the video that plays while this tile is highlighted on the home screen.</p>
+ <div id="gml"></div>
+ <div class="btns"><button class="reset" id="gmmain">Reset</button><button class="reset" id="gmcancel">Cancel</button></div>
+</div></div>
 <div class="toast" id="toast"></div>
 <script>
-var S=null,busy=false,uploading=0,queue=[];
+var S=null,busy=false,uploading=0,queue=[],tab='videos';
 function $(i){return document.getElementById(i)}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function bare(n){return n.replace(/\.mp4$/i,'')}
-function nice(n){var t=bare(n).replace(/[-_.]+/g,' ').replace(/\b(moewalls|com|wallpaper|4k|1080p|hd)\b/gi,' ').replace(/\s+/g,' ').trim()||bare(n);return t.replace(/\b\w/g,function(c){return c.toUpperCase()})}
+function nice(n){var t=bare(n).replace(/[-_.]+/g,' ').replace(/\b(\w+ com|com|wallpaper|4k|1080p|hd)\b/gi,' ').replace(/\s+/g,' ').trim()||bare(n);return t.replace(/\b\w/g,function(c){return c.toUpperCase()})}
+function clipName(path){return nice(path.split('/').pop())}
 function mb(b){return b>=1e9?(b/1e9).toFixed(1)+' GB':Math.max(1,Math.round(b/1e6))+' MB'}
 function toast(t){var e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(e.t);e.t=setTimeout(function(){e.style.display='none'},2800)}
 function get(u,cb){var x=new XMLHttpRequest();x.open('GET',u);x.onload=function(){var r;try{r=JSON.parse(x.responseText)}catch(e){r={ok:false}}cb(r)};x.onerror=function(){busy=false;toast('LiveShell Engine is not running on the PS5')};x.send()}
+// The main wallpaper's resolution for the texts: "4K" or "2K" (a big one; its badge).
+function mainRes(){var i=cur();return i>=0&&(S.videos[i].res=='2K'||S.videos[i].res=='4K')?S.videos[i].res:'4K'}
 function cur(){if(!S)return -1;for(var i=0;i<S.videos.length;i++)if(S.videos[i].path==S.current)return i;return -1}
+function sw(id,on){var e=$(id);if(e)e.className=e.className.replace(/ on\b/,'')+(on?' on':'')}
+function segs(id,val){var b=$(id).querySelectorAll('.seg');for(var q=0;q<b.length;q++)b[q].className='seg'+(+b[q].getAttribute('data-v')==val?' on':'')}
 
 function render(){
- $('power').className='power'+(S.enabled?' on':'');$('ptext').textContent=S.enabled?'Wallpaper on':'Wallpaper off';
+ sw('power',S.enabled);$('ptext').textContent=S.enabled?'Wallpaper on':'Wallpaper off';
  $('cnt').textContent=S.videos.length||'';
- var i=cur(),h='';
+ var i=cur(),h='',vpages=Math.max(1,Math.ceil(S.videos.length/VPER));if(vpage>=vpages)vpage=vpages-1;
  S.videos.forEach(function(v,n){
+  if(n<vpage*VPER||n>=vpage*VPER+VPER)return; // 15 per page: light with many videos
   var on=n==i,t=nice(v.name);
   h+='<div class="card'+(on?' on':'')+'"><span class="art">'+esc(t.charAt(0).toUpperCase())+'</span>'
-   +(on?'<span class="badge"><i></i>Playing</span>':'')
-   +'<div class="name">'+esc(t)+'</div><div class="sub"><span>'+esc(v.where)+'</span><span>'+mb(v.size)+'</span></div>'
+   +(on?'<span class="badge"><i></i>Main video</span>':'')
+   +(v.why?'<span class="pc bad" title="Won&#39;t play on the PS5"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>'
+     :'<span class="pc ok" title="Plays on the PS5"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 6.2l2.3 2.3 4.7-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>')
+   +'<button class="fav'+(v.fav?' on':'')+'" onclick="fav('+n+')" aria-label="Favorite"><svg width="17" height="17" viewBox="0 0 16 16"><path d="M8 13.6S2 10 2 5.9A3 3 0 0 1 8 4.4a3 3 0 0 1 6 1.5C14 10 8 13.6 8 13.6z" fill="'+(v.fav?'currentColor':'none')+'" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button>'
+   +'<div class="name">'+esc(t)+(v.res?'<span class="res r'+v.res+'">'+v.res+'</span>':'')+(v.snd?'<span class="snd" title="Has sound"><svg width=\'14\' height=\'14\' viewBox=\'0 0 16 16\'><path d=\'M2.5 6h2.2L8 3.3v9.4L4.7 10H2.5z\' fill=\'currentColor\'/><path d=\'M10.6 5.6a3.2 3.2 0 0 1 0 4.8M12.4 3.9a5.6 5.6 0 0 1 0 8.2\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.4\' stroke-linecap=\'round\'/></svg></span>':'')+'</div><div class="sub">'+(v.why?'<span class="why">Won&#39;t play: '+esc(v.why)+'</span>':'<span>'+esc(v.where)+'</span><span>'+mb(v.size)+'</span>')+'</div>'
    +'<div class="acts">'+(on?'':'<button class="act play" onclick="play('+n+')">Play</button>')
    +'<button class="act" id="del'+n+'" onclick="del('+n+')">Delete</button></div></div>';
  });
  $('list').innerHTML=h||'<div class="empty">No videos yet. Add one above.</div>';
+ var vp='';if(vpages>1)for(var q=0;q<vpages;q++)vp+='<button class="pg'+(q==vpage?' on':'')+'" onclick="vPage('+q+')">'+(q+1)+'</button>';$('vpages').innerHTML=vp;
+ // settings
+ sw('o-gamevideos',S.gamevideos!==false);$('g4k').style.display=S.main4k?'block':'none';var mr=document.querySelectorAll('.mres');for(var m1=0;m1<mr.length;m1++)mr[m1].textContent=mainRes();$('o-gamevideos').classList.toggle('dis',!!S.main4k||S.mainvideo===false);sw('o-pergame',S.mainvideo===false);sw('o-shuffle',S.shuffle);sw('o-gamehide',S.gamehide);
+ sw('o-menuhide',S.menuhide);sw('o-storeonly',S.storeonly);sw('o-parallax',S.parallax);
+ $('o-storeclip').style.display=S.storeonly?'':'none';var sc=gameMap()['NPXS40047'];$('storeclipname').textContent=sc?clipName(sc):'Main video';
+ segs('volctl',S.volume==null?100:S.volume);segs('dimctl',S.dim||0);
+ var lk=document.querySelectorAll('.segs.look');for(var a=0;a<lk.length;a++){var lv=(S.looks||[])[+lk[a].getAttribute('data-l')]||0,bs=lk[a].querySelectorAll('.seg');for(var b=0;b<bs.length;b++)bs[b].className='seg'+(+bs[b].getAttribute('data-v')==lv?' on':'')}
+ if(tab=='games')renderGames();
 }
 function poll(){if(busy)return;get('/api/state',function(s){if(s.videos){S=s;render()}})}
-function play(n){if(busy||!S)return;busy=true;toast('Switching to '+nice(S.videos[n].name));get('/api/select?i='+n,function(r){busy=false;toast(r.ok?'Now playing on the PS5':(r.error||'That did not work'));poll()})}
-function del(n){var b=$('del'+n);if(!b||!S)return;if(b.className.indexOf('armed')<0){b.className+=' armed';b.textContent='Delete?';setTimeout(function(){if(b.parentNode){b.className='act';b.textContent='Delete'}},3000);return}
- busy=true;get('/api/delete?i='+n,function(r){busy=false;toast(r.ok?'Deleted':(r.error||'That did not work'));poll()})}
+function play(n){if(busy||!S)return;busy=true;toast('Switching to '+nice(S.videos[n].name));get('/api/select?i='+n,function(r){busy=false;toast(r.ok?'Now the main video on the PS5':(r.error||'That did not work'));poll()})}
+function arm(b,label){if(b.className.indexOf('armed')>=0)return true;b.className+=' armed';var old=b.textContent;b.textContent=label;setTimeout(function(){if(b.parentNode){b.className=b.className.replace(' armed','');b.textContent=old}},3000);return false}
+// Favorite: pinned at the top of the list until un-favorited (the console keeps the list).
+function fav(n){var v=S.videos[n];if(!v||busy)return;var on=!v.fav;busy=true;
+ get('/api/fav?i='+n+'&v='+(on?1:0),function(r){busy=false;toast(r.ok?(on?'Favorite: stays at the top':'Removed from favorites'):(r.error||'That did not work'));poll()})}
+function del(n){var b=$('del'+n);if(!b||!S||!arm(b,'Delete?'))return;
+ busy=true;get('/api/delete?i='+n,function(r){busy=false;toast(r.ok?'Deleted':(r.error||'That did not work'));poll();if(gamesLoaded)loadGames()})}
 $('power').onclick=function(){if(!S||busy)return;var on=!S.enabled;S.enabled=on;busy=true;render();get(on?'/api/on':'/api/off',function(r){busy=false;if(!r.ok)S.enabled=!on;toast(r.ok?(on?'Wallpaper on':'Wallpaper off'):(r.error||'That did not work'));render();poll()})};
+// Videos per game only = the main video off ("mainvideo" false); it turns Videos per game on.
+function pgOnly(){if(!S)return;var on=S.mainvideo!==false;S.mainvideo=!on;if(on)S.gamevideos=true;render();
+ get('/api/set?k=mainvideo&v='+(on?0:1),function(r){toast(r.ok?(on?'Videos per game only: other tiles keep the PS5 background':'The main video is back on every tile'):(r.error||'That did not work'));poll()})}
+function opt(k){if(!S)return;if(k=='gamevideos'&&S.main4k){toast('Videos per game are paused while your main wallpaper is '+mainRes()+'.');return}if(k=='gamevideos'&&S.mainvideo===false){toast('Videos per game only needs them on. Turn that off first.');return}var on=k=='gamevideos'?S[k]===false:!S[k];S[k]=on;render();
+ get('/api/set?k='+k+'&v='+(on?1:0),function(r){toast(r.ok?'Saved':(r.error||'That did not work'));poll()})}
+$('volctl').onclick=function(e){var v=e.target.getAttribute&&e.target.getAttribute('data-v');if(v==null||!S)return;S.volume=+v;render();get('/api/volume?v='+v,function(r){toast(r.ok?(v=='0'?'Muted':'Sound '+v+'%'):'That did not work')})};
+$('dimctl').onclick=function(e){var v=e.target.getAttribute&&e.target.getAttribute('data-v');if(v==null||!S)return;S.dim=+v;render();get('/api/dim?v='+v,function(r){toast(r.ok?(v=='0'?'Dim off':'Wallpaper dimmed '+v+'%'):'That did not work')})};
+var lkb=document.querySelectorAll('.segs.look');for(var c=0;c<lkb.length;c++)lkb[c].onclick=function(e){var v=e.target.getAttribute&&e.target.getAttribute('data-v');if(v==null||!S)return;var l=+this.getAttribute('data-l'),k=this.getAttribute('data-k'),t=this.parentNode.querySelector('b').textContent;if(!S.looks)S.looks=[0,0,0,0];S.looks[l]=+v;render();get('/api/look?k='+k+'&v='+v,function(r){toast(r.ok?t+': '+['off','light','strong'][+v]:'That did not work')})};
+$('reset').onclick=function(){if(!arm(this,'Press again to reset'))return;get('/api/reset',function(r){toast(r.ok?'Settings reset':(r.error||'That did not work'));poll()})};
+$('shutdown').onclick=function(){if(!arm(this,'Press again to shut down'))return;get('/api/shutdown',function(){toast('LiveShell is shutting down. The home screen restarts in a moment.')})};
+
+// tabs
+function setTab(t){tab=t;var b=$('tabs').querySelectorAll('.tab');for(var n=0;n<b.length;n++)b[n].className='tab'+(b[n].getAttribute('data-t')==t?' on':'');
+ $('v-videos').style.display=t=='videos'?'':'none';$('v-games').style.display=t=='games'?'':'none';$('v-settings').style.display=t=='settings'?'':'none';
+ if(t=='games'){if(!gamesLoaded)loadGames();else renderGames()}window.scrollTo(0,0)}
+$('tabs').onclick=function(e){var t=e.target.getAttribute&&e.target.getAttribute('data-t');if(t)setTab(t)};
+
+// Library: every installed game and app; tap one to give it its own video.
+var GAMES=[],gamesLoaded=false,gameNow='';
+function loadGames(){gamesLoaded=true;var x=new XMLHttpRequest();x.open('GET','/api/games');x.onload=function(){try{GAMES=JSON.parse(x.responseText)}catch(e){GAMES=[]}renderGames()};x.send()}
+function gameMap(){var m={};((S&&S.games)||'').split('\n').forEach(function(l){var k=l.indexOf('=');if(k>0)m[l.slice(0,k)]=l.slice(k+1)});return m}
+function gameName(tid){if(tid=='NPXS40047')return'PlayStation Store';for(var k=0;k<GAMES.length;k++)if(GAMES[k].tid==tid)return GAMES[k].name;return tid}
+function renderGames(){
+ var q=$('gsearch').value.trim().toLowerCase(),own=0,ord=[];
+ GAMES.forEach(function(g,n){if(g.clip){own++;ord.push(n)}});GAMES.forEach(function(g,n){if(!g.clip)ord.push(n)});
+ $('gcnt').textContent=GAMES.length?GAMES.length+(own?' · '+own+' with their own video':''):'';
+ var h='';
+ ord.forEach(function(n){var g=GAMES[n],has=!!g.clip;
+  if(q&&g.name.toLowerCase().indexOf(q)<0&&g.tid.toLowerCase().indexOf(q)<0)return;
+  h+='<button class="gr'+(has?' on':'')+'" onclick="openPicker(GAMES['+n+'].tid)"><img class="gico" src="/gameicon?tid='+g.tid+'" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">'
+   +'<div class="info"><div class="name">'+esc(g.name)+'</div><div class="sub"><span>'+esc(g.tid)+'</span><span>'+(has?esc(clipName(g.clip)):'Main video')+'</span></div></div>'
+   +(has?'<span class="tag">Own video</span>':'')+'</button>'});
+ $('glist').innerHTML=h||'<div class="empty">'+(GAMES.length?'Nothing matches.':'Nothing found.')+'</div>';
+}
+$('gsearch').oninput=renderGames;
+function openPicker(tid){
+ if(!S)return;gameNow=tid;var c=gameMap()[tid]||'',h='';
+ $('gmt').textContent='Background for '+gameName(tid);
+ S.videos.forEach(function(v,n){var on=v.path==c;
+  h+='<button class="pick'+(on?' on':'')+(v.k4&&gameNow!='NPXS40047'?' k4':'')+'" onclick="pickGame('+n+')"><div class="info"><div class="name">'+esc(nice(v.name))+'</div><div class="sub">'+(v.k4&&gameNow!='NPXS40047'?'<span>'+(v.res||'4K')+': main wallpaper only</span>':'<span>'+esc(v.where)+'</span><span>'+mb(v.size)+'</span>')+'</div></div>'
+   +(on?'<span class="tag">Chosen</span>':v.k4&&gameNow!='NPXS40047'?'<span class="tag">'+(v.res||'4K')+'</span>':'')+'</button>'});
+ $('gml').innerHTML=h||'<div class="empty">No videos yet. Add one in Videos.</div>';
+ $('gm').style.display='flex';
+}
+function closePicker(){$('gm').style.display='none';gameNow=''}
+function pickGame(n){var tid=gameNow,v=S.videos[n];if(v&&v.k4&&tid!='NPXS40047'){toast((v.res||'4K')+' videos work as the main wallpaper only. Pick a 1080p video for this game.');return}get('/api/gamebg?tid='+tid+'&i='+n,function(r){toast(r.ok?nice(v.name)+' set for '+gameName(tid):(r.error||'That did not work'));closePicker();poll();loadGames()})}
+$('gmmain').onclick=function(){var tid=gameNow;get('/api/gamebg?tid='+tid+'&i=-1',function(r){toast(r.ok?gameName(tid)+' uses the main video':'That did not work');closePicker();poll();loadGames()})};
+$('gmcancel').onclick=closePicker;
+$('gm').onclick=function(e){if(e.target===this)closePicker()};
+
+var vpage=0,VPER=15;
+function vPage(k){vpage=k;render();window.scrollTo(0,0)}
 
 // Uploads: one file at a time, raw body, progress per file.
 function addFiles(list){for(var k=0;k<list.length;k++){var f=list[k];if(!/\.mp4$/i.test(f.name)){toast(f.name+' is not an .mp4');continue}queue.push(f)}next()}

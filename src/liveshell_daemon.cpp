@@ -13,8 +13,10 @@
  *   /system_tmp/liveshell/status.txt  what ShellUI is doing: playing <path> / stopped / failed <rc>
  */
 #include "liveshell.hpp"
+#include "zstd_decompress.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <arpa/inet.h>
 #include <cctype>
@@ -111,6 +113,9 @@ bool        g_menu_hide  = true;  // hide the video in Settings / system apps (d
 bool        g_store_only = false; // video only while the PS Store tile is highlighted (off by default)
 bool        g_parallax   = false; // nudge the video when moving between home tiles
 bool        g_game_running = false;
+bool        g_game_hide    = false; // option: no video on the home screen while a game is open (suspended)
+bool        g_game_open    = false; // a game is open, in front or suspended in the background
+constexpr const char* kGameOpenFile = "/system_tmp/liveshell/gameopen.txt"; // ShellUI: do not start a video
 std::string g_game_title;
 std::string g_override;     // per-game clip playing instead of g_current ("" = main wallpaper)
 volatile bool g_focus_recheck = false; // games.txt changed: re-evaluate the highlighted game now
@@ -373,17 +378,21 @@ void load_config() {
 		} else if (line.rfind("gamevideos=", 0) == 0) {
 			g_game_videos = line.substr(11) != "0";
 		} else if (line.rfind("mainvideo=", 0) == 0) {
-			// ignored: the "Main video" switch was removed (it is always on)
+			// ignored: an old "Main video" switch (removed in v1.2) - its own key below since v1.4
+		} else if (line.rfind("pergameonly=", 0) == 0) {
+			g_main_video = line.substr(12) == "0"; // 1 = "Videos per game only" (v1.4: hides, no stop/start)
 		} else if (line.rfind("shuffle=", 0) == 0) {
 			g_shuffle = line.substr(8) != "0";
 		} else if (line.rfind("parallax=", 0) == 0) {
 			g_parallax = line.substr(9) != "0";
+		} else if (line.rfind("gamehide=", 0) == 0) {
+			g_game_hide = line.substr(9) != "0";
 		} else if (line.rfind("menuhide=", 0) == 0) {
 			g_menu_hide = line.substr(9) != "0";
 		} else if (line.rfind("storeonly=", 0) == 0) {
 			g_store_only = line.substr(10) != "0";
 		} else if (line.rfind("gamepause=", 0) == 0) {
-			g_game_pause = line.substr(10) != "0";
+			g_game_pause = true; // always on: games get the video decoder; an old "0" is ignored
 		}
 		if (end == std::string::npos) {
 			break;
@@ -403,7 +412,7 @@ void load_config() {
 
 void save_config() {
 	write_text(kConfigFile, std::string("enabled=") + (g_enabled ? "1" : "0") + "\nvideo=" + g_current + "\ndim=" + std::to_string(g_dim) + "\nvolume=" + std::to_string(g_volume) + "\nblur=" + std::to_string(g_blur) + "\nlooks=" + looks_text() +
-	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=" + (g_main_video ? "1" : "0") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nstoreonly=" + (g_store_only ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\n");
+	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=1\npergameonly=" + (g_main_video ? "0" : "1") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nstoreonly=" + (g_store_only ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\ngamehide=" + (g_game_hide ? "1" : "0") + "\n");
 }
 
 // ---- telling ShellUI what to play ------------------------------------------------------------
@@ -563,7 +572,7 @@ bool apply_inner(std::string& error);
 // (The first try kept the main clip and swapped on the Store tile: its first frame showed, user.)
 std::string store_clip() {
 	const std::string c = saved_game_clip("NPXS40047");
-	return !c.empty() && exists(c.c_str()) ? c : g_current;
+	return !c.empty() && exists(c.c_str()) ? c : g_current; // 4K too: one clip, never swapped (like the main one)
 }
 
 // Caller holds g_ctl. Every change also refreshes ShellUI's fast-switch map.
@@ -577,9 +586,15 @@ bool apply_inner(std::string& error) {
 	// The tile's own clip wins; otherwise the main one, unless "Main video" is off (then nothing).
 	const std::string clip = g_store_only ? store_clip()
 	                         : !g_override.empty() ? g_override : (g_main_video ? g_current : std::string());
+	// Videos per game only, a tile without a video: ShellUI hides the running one (fast.txt "*=hide"); stopping it
+	// here was what made the old "Main video off" flash on every tile move.
+	if (!g_store_only && !g_main_video && g_override.empty() && g_enabled) {
+		return true;
+	}
 	// Same folder while a clip plays: quick swap in ShellUI (fade to black, swap, fade in), no
 	// release wait: the folder stays mounted (the full stop took ~4 s per switch, test v11-4).
-	if (g_injected && g_enabled && !(g_game_pause && g_game_running) && !clip.empty() && exists(clip.c_str()) &&
+	if (g_injected && g_enabled && !(g_game_pause && g_game_running) && !(g_game_hide && g_game_open) &&
+	    !clip.empty() && exists(clip.c_str()) &&
 	    mount_base(clip) == g_mounted_folder &&
 	    (shellui_status().rfind("playing", 0) == 0 || shellui_status().rfind("starting", 0) == 0)) {
 		// "starting" too: ShellUI's own fast switch may be mid-swap (test v11-9: that moment sent us
@@ -589,7 +604,8 @@ bool apply_inner(std::string& error) {
 		log("apply: quick swap to %s", clip.c_str());
 		return true;
 	}
-	const bool want_video = g_enabled && !(g_game_pause && g_game_running) && !clip.empty() && exists(clip.c_str());
+	const bool want_video = g_enabled && !(g_game_pause && g_game_running) && !(g_game_hide && g_game_open) &&
+	                        !clip.empty() && exists(clip.c_str());
 	if (want_video && g_injected && mount_base(clip) == g_mounted_folder) {
 		const std::string st = shellui_status();
 		if (st.empty() || st.rfind("stopped", 0) == 0) {
@@ -1003,6 +1019,43 @@ void notify_plain(const char* text) {
 	send_notification(text, false);
 }
 
+// Favorites (v1.4): /data/LiveShell/favorites.txt, one clip path per line; pinned at the top of the list.
+constexpr const char* kFavFile = "/data/LiveShell/favorites.txt";
+std::mutex            g_fav_lock;
+
+std::vector<std::string> favorites() {
+	std::lock_guard<std::mutex> lock(g_fav_lock);
+	const std::string           text = read_text(kFavFile, 64 * 1024);
+	std::vector<std::string>    out;
+	size_t                      pos = 0;
+	while (pos < text.size()) {
+		const size_t end = text.find('\n', pos);
+		std::string  line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+		if (!line.empty()) {
+			out.push_back(line);
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		pos = end + 1;
+	}
+	return out;
+}
+
+void set_favorite(const std::string& path, bool on) {
+	std::vector<std::string> now = favorites();
+	std::lock_guard<std::mutex> lock(g_fav_lock);
+	now.erase(std::remove(now.begin(), now.end(), path), now.end());
+	if (on) {
+		now.push_back(path);
+	}
+	std::string text;
+	for (const std::string& f : now) {
+		text += f + "\n";
+	}
+	write_text(kFavFile, text);
+}
+
 std::vector<Video> list_videos() {
 	std::vector<Video> all;
 	auto scan = [&](const std::string& folder, const std::string& where) {
@@ -1010,17 +1063,22 @@ std::vector<Video> list_videos() {
 		if (dir == nullptr) {
 			return;
 		}
-		std::vector<Video> found;
+		// By date then name here; the whole list is put newest first at the end (all folders together).
+		std::vector<std::pair<long long, Video>> found;
 		while (dirent* e = readdir(dir)) {
 			if (is_mp4(e->d_name)) {
-				found.push_back({folder + "/" + e->d_name, e->d_name, where});
+				Video       v {folder + "/" + e->d_name, e->d_name, where};
+				struct stat st {};
+				found.push_back({stat(v.path.c_str(), &st) == 0 ? static_cast<long long>(st.st_mtime) : 0LL, v});
 			}
 		}
 		closedir(dir);
-		std::sort(found.begin(), found.end(), [](const Video& a, const Video& b) {
-			return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+		std::sort(found.begin(), found.end(), [](const std::pair<long long, Video>& a, const std::pair<long long, Video>& b) {
+			return a.first != b.first ? a.first > b.first : strcasecmp(a.second.name.c_str(), b.second.name.c_str()) < 0;
 		});
-		all.insert(all.end(), found.begin(), found.end());
+		for (const auto& f : found) {
+			all.push_back(f.second);
+		}
 	};
 	// Game folders (named after a title id) inside a video folder: their clips are listed too.
 	auto scan_games = [&](const std::string& folder, const std::string& where) {
@@ -1069,6 +1127,22 @@ std::vector<Video> list_videos() {
 			scan_games(video, where);
 		}
 	}
+	// One list, newest first wherever it is (a new clip on USB is at the top too); same date: as scanned.
+	std::vector<std::pair<long long, Video>> dated;
+	for (const Video& v : all) {
+		struct stat st {};
+		dated.push_back({stat(v.path.c_str(), &st) == 0 ? static_cast<long long>(st.st_mtime) : 0LL, v});
+	}
+	std::stable_sort(dated.begin(), dated.end(),
+	                 [](const std::pair<long long, Video>& a, const std::pair<long long, Video>& b) { return a.first > b.first; });
+	all.clear();
+	for (const auto& d : dated) {
+		all.push_back(d.second);
+	}
+	// Favorites first (newest first among them too), until un-favorited.
+	const std::vector<std::string> fav = favorites();
+	std::stable_partition(all.begin(), all.end(),
+	                      [&](const Video& v) { return std::find(fav.begin(), fav.end(), v.path) != fav.end(); });
 	return all;
 }
 
@@ -1113,6 +1187,7 @@ State get_state() {
 		st.menu_hide  = g_menu_hide;
 		st.store_only = g_store_only;
 		st.parallax   = g_parallax;
+		st.game_hide  = g_game_hide;
 		st.game       = g_game_running ? g_game_title : std::string();
 	}
 	st.status = shellui_status();
@@ -1125,10 +1200,23 @@ bool select_video(const std::string& path, std::string& error) {
 		error = "That video is gone";
 		return false;
 	}
+	if (refuse_4k(path, error)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> lock(g_ctl);
+	const bool was_4k = clip_is_big(g_current);
 	g_current = path;
 	g_enabled = true;
 	save_config(); // g_override stays: a highlighted game's own clip wins over the main video
+	if (g_main_video && clip_is_big(path)) {
+		g_override.clear(); // 4K main: every tile shows it (videos per game pause)
+		if (!was_4k && g_game_videos && !read_text("/data/LiveShell/games.txt", 64 * 1024).empty()) {
+			notify((clip_res(path) + " main wallpaper: videos per game are paused").c_str()); // 4K or 2K
+			notify("They come back with a 1080p main wallpaper.");
+		}
+	} else if (g_main_video && was_4k && g_game_videos && !read_text("/data/LiveShell/games.txt", 64 * 1024).empty()) {
+		notify("Videos per game are back");
+	}
 	return apply_locked(error);
 }
 
@@ -1186,25 +1274,43 @@ bool set_enabled(bool on, std::string& error) {
 
 bool set_option(const std::string& key, bool on, std::string& error) {
 	std::lock_guard<std::mutex> lock(g_ctl);
+	if (key == "mainvideo") {
+		// on = the main video on every tile; off = "Videos per game only" (needs videos per game on)
+		g_main_video = on;
+		if (!on) {
+			g_game_videos = true;
+		}
+		save_config();
+		log("option mainvideo=%d (videos per game only %s)", on ? 1 : 0, on ? "off" : "ON");
+		g_focus_recheck = true;
+		return !g_injected || apply_locked(error);
+	}
 	if (key == "shuffle") {
 		g_shuffle = on;
 	} else if (key == "gamevideos") {
-		g_game_videos = on;
+		g_game_videos = on || !g_main_video; // per game only needs them
 		save_config();
 		log("option gamevideos=%d", on ? 1 : 0);
 		g_focus_recheck = true; // the highlighted tile decides again
 		return !g_injected || apply_locked(error);
 	} else if (key == "gamepause") {
-		g_game_pause = on;
+		g_game_pause = true; // not a setting any more (always on)
+		(void)on;
 	} else if (key == "parallax") {
 		g_parallax = on;
 		write_text(kParallaxFile, on ? "1\n" : "0\n");
+	} else if (key == "gamehide") {
+		g_game_hide = on;
+		write_game_open();
+		save_config();
+		log("option gamehide=%d", on ? 1 : 0);
+		return !g_injected || apply_locked(error); // a game open right now: the video goes / comes back
 	} else if (key == "menuhide") {
 		g_menu_hide = on;
 		write_text(kMenusFile, on ? "1\n" : "0\n");
 	} else if (key == "storeonly") {
 		// PS Store only: ShellUI hides (fades + mutes) the video on every other tile; per-game videos
-		// are not used. The player keeps running, so coming back to the Store is instant.
+		// are not used. The player keeps running, so coming back to the PS Store tile is instant.
 		g_store_only = on;
 		write_text(kStoreOnlyFile, on ? "1\n" : "0\n");
 		g_focus_recheck = true;
@@ -1243,6 +1349,7 @@ bool delete_video(const std::string& path, std::string& error) {
 	unlink(cover.c_str());
 	log("delete %s: %s", path.c_str(), ok ? "done" : strerror(errno));
 	if (ok) {
+		set_favorite(path, false);
 		// Games that used it go back to the main video (the Library showed the deleted name).
 		const std::string text = read_text("/data/LiveShell/games.txt", 64 * 1024);
 		std::string       out;
@@ -1299,6 +1406,8 @@ bool reset_settings(std::string& error) {
 	write_text(kStoreOnlyFile, "0\n");
 	g_parallax   = false;
 	write_text(kParallaxFile, "0\n");
+	g_game_hide  = false;
+	write_game_open();
 	write_text(kMenusFile, "1\n");
 	if (g_current.empty() || !exists(g_current.c_str())) {
 		const std::vector<Video> videos = list_videos();
@@ -1324,7 +1433,64 @@ std::string games_text() {
 	return read_text(kGamesFile, 64 * 1024);
 }
 
+// Tiles with no background texture of their own (web-app tiles like Payload Manager, homebrew with only
+// a pic0.png like Overdrive) make Sony load its generic bg_hub_default: no title id anywhere, so their
+// video never played (v1.2 research). Give such a tile Sony's own default background as pic0.dds
+// (same format as games', decoded here from Sony's file - nothing of Sony's is shipped): it looks the
+// same as before, and Sony now loads it from the tile's own folder, i.e. with its id. Never overwrites.
+void ensure_tile_background(const std::string& tid) {
+	if (tid.empty() || tid == "NPXS40047") {
+		return;
+	}
+	const std::string meta = "/user/appmeta/" + tid, app = "/user/app/" + tid + "/sce_sys";
+	if (exists((meta + "/pic0.dds").c_str()) || exists((app + "/pic0.dds").c_str())) {
+		return; // has its own background
+	}
+	// Where Sony looks: the app's metadata folder (app.db metaDataPath). Homebrew like Overdrive has an
+	// appmeta folder too, but its metaDataPath is /user/app/<id>/sce_sys - a pic0.dds in appmeta was
+	// never read (v1.2, app.db pic0Info stayed empty). So sce_sys first, appmeta only if it is missing.
+	struct stat st {};
+	const std::string dir = stat(app.c_str(), &st) == 0 && S_ISDIR(st.st_mode) ? app
+	                        : stat(meta.c_str(), &st) == 0 && S_ISDIR(st.st_mode) ? meta
+	                                                                              : std::string();
+	if (dir.empty()) {
+		log("tile background %s: no app folder", tid.c_str());
+		return;
+	}
+	const std::string zst = read_text("/system_ex/vsh_asset/bg_hub_default.dds.zst", 16 * 1024 * 1024);
+	const size_t      n   = zst.empty() ? 0 : liveshell_zstd_size(zst.data(), zst.size());
+	if (n < 1024 * 1024 || n > 64 * 1024 * 1024) {
+		log("tile background %s: Sony's default background not readable (%zu -> %zu)", tid.c_str(), zst.size(), n);
+		return;
+	}
+	std::string dds(n, '\0');
+	if (liveshell_zstd_decode(&dds[0], n, zst.data(), zst.size()) != n || dds.compare(0, 4, "DDS ") != 0) {
+		log("tile background %s: could not decode Sony's default background", tid.c_str());
+		return;
+	}
+	const std::string tmp = dir + "/pic0.dds.liveshell", out = dir + "/pic0.dds";
+	if (!write_text(tmp.c_str(), dds) || rename(tmp.c_str(), out.c_str()) != 0) {
+		unlink(tmp.c_str());
+		log("tile background %s: cannot write %s (errno %d)", tid.c_str(), out.c_str(), errno);
+		return;
+	}
+	log("tile background %s: gave it Sony's default background (%s)", tid.c_str(), out.c_str());
+	// Sony reads a tile's background info once and caches it: a tile that just got one only sends its id
+	// once the home screen restarts - shutting LiveShell down does that (user). Say so, once.
+	std::string name = tid;
+	for (const Game& g : list_games()) {
+		if (g.tid == tid) {
+			name = g.name;
+			break;
+		}
+	}
+	notify_plain((name + " is ready for its own video. Shut down LiveShell Engine and load it again to see it.").c_str());
+}
+
 void set_game_background(const std::string& tid, const std::string& path) {
+	if (!path.empty()) {
+		ensure_tile_background(tid); // before the lock: decoding takes a moment
+	}
 	std::lock_guard<std::mutex> lock(g_ctl);
 	std::string out;
 	const std::string text = read_text(kGamesFile, 64 * 1024);
@@ -1357,8 +1523,97 @@ void set_game_background(const std::string& tid, const std::string& path) {
 // ShellUI's fast switch (test v11-8): it picks the highlighted game's clip itself from this map
 // instead of waiting for our round trip. "*=<main clip>", then "TITLEID=<clip>", as ShellUI sees them;
 // "-" = needs a remount first (we do that one). Caller holds g_ctl.
-// Does the clip have a sound track? An mp4 'hdlr' box of type 'soun' inside 'moov'. Cached by
-// size + date; unreadable = assume sound (the old behaviour). Caller holds g_ctl.
+// Is the sound track only silence? The track's own frames (the sample table: stsc + stsz + stco/co64 of the track
+// whose hdlr is at hdlr_at), measured by byte entropy: silence is padding (<= 2.8 bits/byte on 54 silent
+// wallpapers), real sound looks random (>= 6.1). Unreadable: not silent.
+bool track_is_silent(int fd, const std::string& moov, size_t hdlr_at) {
+	const size_t n    = moov.size();
+	const size_t trak = moov.rfind("trak", hdlr_at);
+	if (trak == std::string::npos || trak < 4) {
+		return false;
+	}
+	auto be = [&](size_t at, int k) -> uint64_t {
+		uint64_t v = 0;
+		for (int i = 0; i < k; ++i) {
+			v = (v << 8) | (at + i < n ? static_cast<unsigned char>(moov[at + i]) : 0);
+		}
+		return v;
+	};
+	const size_t end   = std::min(n, trak - 4 + static_cast<size_t>(be(trak - 4, 4)));
+	auto         box   = [&](const char* type) -> size_t { // the payload (after the type), inside this track
+		const size_t at = moov.find(type, trak);
+		return at != std::string::npos && at + 12 <= end ? at + 4 : std::string::npos;
+	};
+	const size_t stsz = box("stsz"), stsc = box("stsc"), stco = box("stco"), co64 = box("co64");
+	if (stsz == std::string::npos || stsc == std::string::npos || (stco == std::string::npos && co64 == std::string::npos)) {
+		return false;
+	}
+	const bool     wide     = stco == std::string::npos;
+	const size_t   co       = wide ? co64 : stco;
+	const uint64_t chunks   = be(co + 4, 4);
+	const uint64_t one_size = be(stsz + 4, 4), samples = be(stsz + 8, 4);
+	const uint64_t stsc_n   = be(stsc + 4, 4);
+	if (chunks == 0 || stsc_n == 0 || co + 8 + chunks * (wide ? 8 : 4) > end || stsc + 8 + stsc_n * 12 > end ||
+	    (one_size == 0 && stsz + 12 + samples * 4 > end)) {
+		return false;
+	}
+	// Frames this small carry nothing: silence (real AAC sound needs hundreds of bytes a frame).
+	uint64_t total = 0;
+	if (one_size != 0) {
+		total = one_size * samples;
+	} else {
+		for (uint64_t k = 0; k < samples; ++k) {
+			total += be(stsz + 12 + k * 4, 4);
+		}
+	}
+	if (samples > 0 && total / samples <= 32) {
+		return true;
+	}
+	// ~48 pieces over the whole track (a clip can be silent with sound only in parts): any piece that looks like
+	// real sound (byte entropy >= 4.5 bits) = sound. Silence is padding (<= 2.8).
+	const uint64_t step  = chunks / 48 > 0 ? chunks / 48 : 1;
+	uint64_t       sample = 0, entry = 0;
+	int            looked = 0;
+	std::string    piece;
+	for (uint64_t c = 1; c <= chunks; ++c) {
+		while (entry + 1 < stsc_n && be(stsc + 8 + (entry + 1) * 12, 4) <= c) {
+			++entry;
+		}
+		const uint64_t per = be(stsc + 8 + entry * 12 + 4, 4);
+		uint64_t       len = 0;
+		for (uint64_t k = 0; k < per && sample + k < samples; ++k) {
+			len += one_size != 0 ? one_size : be(stsz + 12 + (sample + k) * 4, 4);
+		}
+		sample += per;
+		if ((c - 1) % step != 0 || len < 256) {
+			continue;
+		}
+		piece.resize(static_cast<size_t>(std::min<uint64_t>(len, 2048)));
+		const off_t at = static_cast<off_t>(be(co + 8 + (c - 1) * (wide ? 8 : 4), wide ? 8 : 4));
+		if (pread(fd, &piece[0], piece.size(), at) != static_cast<ssize_t>(piece.size())) {
+			continue;
+		}
+		++looked;
+		size_t hist[256] = {};
+		for (const char ch : piece) {
+			++hist[static_cast<unsigned char>(ch)];
+		}
+		double bits = 0.0;
+		for (const size_t h : hist) {
+			if (h != 0) {
+				const double q = static_cast<double>(h) / static_cast<double>(piece.size());
+				bits -= q * log2(q);
+			}
+		}
+		if (bits >= 4.5) {
+			return false; // real sound here
+		}
+	}
+	return looked > 0; // nothing readable: not silent (the old behaviour)
+}
+
+// Does the clip have a sound track you can hear? An mp4 'hdlr' box of type 'soun' inside 'moov', and not only
+// silence (track_is_silent). Cached by size + date; unreadable = assume sound (the old behaviour). Caller holds g_ctl.
 bool clip_has_audio(const std::string& path) {
 	static std::map<std::string, std::pair<long long, bool>> cache;
 	struct stat st {};
@@ -1400,7 +1655,7 @@ bool clip_has_audio(const std::string& path) {
 					audio = false;
 					for (size_t at = moov.find("hdlr"); at != std::string::npos; at = moov.find("hdlr", at + 4)) {
 						if (at + 16 <= n && moov.compare(at + 12, 4, "soun") == 0) {
-							audio = true;
+							audio = !track_is_silent(fd, moov, at); // a track of silence is "no sound"
 							break;
 						}
 					}
@@ -1415,21 +1670,210 @@ bool clip_has_audio(const std::string& path) {
 	return audio;
 }
 
+namespace {
+
+// What the clip's video track is, from its header ('moov' only, a few KB): the coded picture size, codec,
+// level, bit depth and colour format. Cached by size + date (web thread + control thread).
+struct ClipInfo {
+	bool        read   = false; // a video track was found
+	std::string codec;          // "avc", "hevc" or another sample entry type ("vp09", "av01"...)
+	uint32_t    w = 0, h = 0;
+	int         level  = 0;     // H.264: 42 = 4.2; HEVC: level_idc (123 = 4.1)
+	int         bits   = 8;     // bit depth (luma)
+	int         chroma = 1;     // 1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4
+	bool        cut    = false; // the file ends before its last box does
+};
+
+ClipInfo clip_info(const std::string& path) {
+	static std::map<std::string, std::pair<long long, ClipInfo>> cache;
+	static std::mutex                                              cache_lock;
+	std::lock_guard<std::mutex>                                    guard(cache_lock);
+	ClipInfo                                                       ci;
+	struct stat                                                    st {};
+	if (stat(path.c_str(), &st) != 0) {
+		return ci;
+	}
+	const long long stamp = static_cast<long long>(st.st_size) * 31 + static_cast<long long>(st.st_mtime);
+	auto            hit   = cache.find(path);
+	if (hit != cache.end() && hit->second.first == stamp) {
+		return hit->second.second;
+	}
+	const int fd = open(path.c_str(), O_RDONLY);
+	if (fd >= 0) {
+		long long     off = 0;
+		unsigned char h[16];
+		while (off + 8 <= static_cast<long long>(st.st_size) && pread(fd, h, 8, off) == 8) {
+			long long size = (static_cast<long long>(h[0]) << 24) | (h[1] << 16) | (h[2] << 8) | h[3];
+			long long head = 8;
+			if (size == 1) {
+				if (pread(fd, h + 8, 8, off + 8) != 8) {
+					break;
+				}
+				size = 0;
+				for (int i = 8; i < 16; ++i) {
+					size = (size << 8) | h[i];
+				}
+				head = 16;
+			} else if (size == 0) {
+				size = static_cast<long long>(st.st_size) - off;
+			}
+			if (size < head) {
+				break;
+			}
+			if (off + size > static_cast<long long>(st.st_size)) {
+				ci.cut = true; // a box runs past the end: the download was cut off
+				break;
+			}
+			if (memcmp(h + 4, "moov", 4) == 0) {
+				const size_t n = static_cast<size_t>(std::min<long long>(size, 8 * 1024 * 1024));
+				std::string  moov(n, '\0');
+				if (pread(fd, &moov[0], n, off) == static_cast<ssize_t>(n)) {
+					auto u8 = [&](size_t at) -> int { return at < n ? static_cast<unsigned char>(moov[at]) : 0; };
+					auto be16 = [&](size_t at) -> uint32_t { return (static_cast<uint32_t>(u8(at)) << 8) | static_cast<uint32_t>(u8(at + 1)); };
+					auto be32 = [&](size_t at) -> uint32_t { return (be16(at) << 16) | be16(at + 2); };
+					// The picture the decoder gets: the video sample entry's width/height (16 bits each, 24 bytes
+					// after its type). Not tkhd: that is the DISPLAY size, a little over 1920 for a 1920x1080
+					// clip with non-square pixels (Floating Island: 1945x1080), which plays fine.
+					for (const char* type : {"avc1", "avc3", "hvc1", "hev1", "vp09", "av01", "mp4v", "mjpg"}) {
+						const size_t at = moov.find(type);
+						if (at == std::string::npos || at < 4 || at + 32 > n) {
+							continue;
+						}
+						ci.read  = true;
+						ci.w     = be32(at + 28) >> 16;
+						ci.h     = be32(at + 28) & 0xFFFF;
+						const bool avc = type[1] == 'v' && type[2] == 'c';
+						const bool hevc = type[0] == 'h';
+						ci.codec = avc ? "avc" : hevc ? "hevc" : type;
+						// Its decoder settings box follows within the sample entry.
+						const size_t cfg = moov.find(avc ? "avcC" : "hvcC", at);
+						if ((avc || hevc) && cfg != std::string::npos && cfg < at + 512) {
+							const size_t p = cfg + 4; // the box's payload
+							if (avc) {
+								const int profile = u8(p + 1);
+								ci.level          = u8(p + 3);
+								if ((u8(p + 5) & 0x1F) > 0 && be16(p + 6) >= 4) {
+									ci.level = u8(p + 6 + 2 + 3); // the SPS's own level (what the decoder reads; the box's copy can differ)
+								}
+								ci.bits           = profile == 110 || profile == 122 || profile == 244 ? 10 : 8;
+								ci.chroma         = profile == 122 ? 2 : profile == 244 ? 3 : 1;
+								if (profile == 100 || profile == 110 || profile == 122 || profile == 244) {
+									// High profiles: chroma format + bit depth after the SPS / PPS lists
+									size_t q = p + 6;
+									for (int k = u8(p + 5) & 0x1F; k > 0 && q + 2 <= n; --k) {
+										q += 2 + be16(q);
+									}
+									if (q < n) {
+										for (int k = u8(q++); k > 0 && q + 2 <= n; --k) {
+											q += 2 + be16(q);
+										}
+									}
+									if (q + 3 <= n && (u8(q) & 0xFC) == 0xFC) { // reserved bits set = the fields are there
+										ci.chroma = u8(q) & 3;
+										ci.bits   = 8 + (u8(q + 1) & 7);
+									}
+								}
+							} else {
+								ci.level  = u8(p + 12);
+								ci.chroma = u8(p + 16) & 3;
+								ci.bits   = 8 + (u8(p + 17) & 7);
+								if ((u8(p + 1) & 0x1F) == 2) { // Main 10
+									ci.bits = std::max(ci.bits, 10);
+								}
+							}
+						}
+						break;
+					}
+					if (!ci.read) { // no video sample entry found: the track header
+						for (size_t at = moov.find("tkhd"); at != std::string::npos && at >= 4; at = moov.find("tkhd", at + 4)) {
+							const size_t box = at - 4;
+							const size_t wat = box + (moov[at + 4] == 1 ? 96 : 84);
+							if (wat + 8 <= n) {
+								ci.w = std::max(ci.w, be32(wat) >> 16);
+								ci.h = std::max(ci.h, be32(wat + 4) >> 16);
+							}
+						}
+					}
+				}
+			}
+			off += size; // on to the end: a cut-off file shows in its last box
+		}
+		close(fd);
+	}
+	cache[path] = {stamp, ci};
+	return ci;
+}
+
+} // namespace
+
+// Is the clip bigger than 1080p (4K is not supported: ShellUI's player gets a Full HD decoder only)?
+bool clip_is_big(const std::string& path) {
+	const ClipInfo ci  = clip_info(path);
+	const bool     big = ci.w > 1920 || ci.h > 1088;
+	return big;
+}
+
+// The badge in the video lists: "4K", "2K", "FHD", "HD" or "" (smaller / unknown).
+std::string clip_res(const std::string& path) {
+	const ClipInfo ci = clip_info(path);
+	const unsigned a  = std::max(ci.w, ci.h), b = std::min(ci.w, ci.h); // portrait clips too
+	if (a == 0) {
+		return {};
+	}
+	return a >= 3800 || b >= 2100 ? "4K" : a >= 2500 || b >= 1400 ? "2K" : a >= 1900 || b >= 1060 ? "FHD" : a >= 1260 || b >= 700 ? "HD" : "";
+}
+
+// "Can I play this?": why the PS5 will not play the clip ("" = it plays, or its header could not be read).
+// Limits: H.264 up to level 4.2, HEVC up to level 4.1, 8-bit 4:2:0, at most 1920x1088.
+std::string clip_problem(const std::string& path) {
+	const ClipInfo ci = clip_info(path);
+	char           why[96] = {};
+	if (ci.cut) {
+		return "The file is cut off - download it again";
+	}
+	const bool uhd = ci.w > 1920 || ci.h > 1088; // 4K: the UHD decoder (H.264 up to 5.2, HEVC up to 5.1)
+	if (ci.w > 3840 || ci.h > 2160) {
+		snprintf(why, sizeof(why), "Too big (%ux%u) - max 3840x2160", ci.w, ci.h);
+	} else if (!ci.read) {
+		return {};
+	} else if (ci.codec != "avc" && ci.codec != "hevc") {
+		snprintf(why, sizeof(why), "%s video - needs H.264 or HEVC",
+		         ci.codec == "vp09" ? "VP9" : ci.codec == "av01" ? "AV1" : ci.codec == "mp4v" ? "MPEG-4" : ci.codec.c_str());
+	} else if (ci.bits > 8) {
+		snprintf(why, sizeof(why), "%d-bit colour - needs 8-bit", ci.bits);
+	} else if (ci.chroma == 2 || ci.chroma == 3) {
+		snprintf(why, sizeof(why), "%s colour - needs 4:2:0", ci.chroma == 2 ? "4:2:2" : "4:4:4");
+	} else if (ci.codec == "avc" && ci.level > (uhd ? 52 : 42)) {
+		snprintf(why, sizeof(why), "H.264 level %d.%d - max %s", ci.level / 10, ci.level % 10, uhd ? "5.2" : "4.2");
+	} else if (ci.codec == "hevc" && ci.level > (uhd ? 153 : 123)) {
+		snprintf(why, sizeof(why), "HEVC level %d.%d - max %s", ci.level / 30, ci.level % 30 / 3, uhd ? "5.1" : "4.1");
+	}
+	return why;
+}
+
 void write_fast_map() {
+	// Wallpaper off: every tile "off", so ShellUI starts nothing by itself (a highlighted tile or the
+	// return from a game started the video again while Settings still said off).
+	if (!g_enabled) {
+		write_text("/system_tmp/liveshell/fast.txt", "*=off\n");
+		return;
+	}
 	auto shown = [](const std::string& clip) -> std::string {
 		if (clip.empty() || g_mounted_folder.empty() || mount_base(clip) != g_mounted_folder || !exists(clip.c_str())) {
 			return "-";
 		}
 		return shown_path(clip);
 	};
-	std::string       out  = "*=" + (g_store_only ? shown(store_clip()) : g_main_video ? shown(g_current) : std::string("off")) + "\n";
-	const std::string text = g_game_videos && !g_store_only ? read_text(kGamesFile, 64 * 1024) : std::string();
+	std::string       out  = "*=" + (g_store_only ? shown(store_clip()) : g_main_video ? shown(g_current) : std::string("hide")) + "\n";
+	const bool        main_4k = !g_store_only && g_main_video && clip_is_big(g_current); // 4K main: no videos per game
+	const std::string text    = g_game_videos && !g_store_only && !main_4k ? read_text(kGamesFile, 64 * 1024) : std::string();
 	size_t            pos  = 0;
 	while (pos < text.size()) {
 		const size_t      end  = text.find('\n', pos);
 		const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
 		const size_t      eq   = line.find('=');
-		if (eq != std::string::npos && eq > 0) {
+		if (eq != std::string::npos && eq > 0 && line.compare(0, eq, "NPXS40047") != 0 && // Store: only in its own mode
+		    !clip_is_big(line.substr(eq + 1))) {                                              // 4K: main wallpaper only
 			out += line.substr(0, eq) + "=" + shown(line.substr(eq + 1)) + "\n";
 		}
 		if (end == std::string::npos) {
@@ -1438,9 +1882,16 @@ void write_fast_map() {
 		pos = end + 1;
 	}
 	// "!<clip>" = no sound track: ShellUI lets the PS5's own music (a game's theme) play with it.
+	// "^<clip>\t<file name>\t" = a 4K clip: ShellUI streams it (UHD); it hides while a game is open.
 	for (const Video& v : list_videos()) {
-		if (!g_mounted_folder.empty() && mount_base(v.path) == g_mounted_folder && !clip_has_audio(v.path)) {
+		if (g_mounted_folder.empty() || mount_base(v.path) != g_mounted_folder) {
+			continue;
+		}
+		if (!clip_has_audio(v.path)) {
 			out += "!" + shown_path(v.path) + "\n";
+		}
+		if (clip_is_big(v.path)) {
+			out += "^" + shown_path(v.path) + "\t" + v.name + "\t\n";
 		}
 	}
 	write_text("/system_tmp/liveshell/fast.txt", out);
@@ -1449,6 +1900,7 @@ void write_fast_map() {
 // ShellUI cannot read /data: it gets a copy of games.txt to label the menu item (Set / Remove).
 void mirror_games() {
 	write_text("/system_tmp/liveshell/games.txt", read_text(kGamesFile, 64 * 1024));
+
 }
 
 
@@ -1508,25 +1960,44 @@ bool is_title_id(const char* n) {
 
 std::vector<Game> list_games() {
 	std::vector<Game> out;
-	DIR* dir = opendir("/user/appmeta");
-	if (dir == nullptr) {
-		return out;
-	}
-	while (dirent* e = readdir(dir)) {
-		if (!is_title_id(e->d_name)) {
+	// Games on the console, then games on extended storage (their metadata: /user/appmeta/external).
+	for (const char* folder : {"/user/appmeta", "/user/appmeta/external"}) {
+		DIR* dir = opendir(folder);
+		if (dir == nullptr) {
 			continue;
 		}
-		const std::string base = std::string("/user/appmeta/") + e->d_name;
-		std::string       name = json_title(base + "/param.json");
-		if (name.empty()) {
-			name = sfo_title(base + "/param.sfo");
+		while (dirent* e = readdir(dir)) {
+			if (!is_title_id(e->d_name) ||
+			    std::any_of(out.begin(), out.end(), [&](const Game& g) { return g.tid == e->d_name; })) {
+				continue;
+			}
+			const std::string base = std::string(folder) + "/" + e->d_name;
+			std::string       name = json_title(base + "/param.json");
+			if (name.empty()) {
+				name = sfo_title(base + "/param.sfo");
+			}
+			if (name.empty()) {
+				continue; // no title: not a game we can show (e.g. tools, leftovers)
+			}
+			out.push_back({e->d_name, name});
 		}
-		if (name.empty()) {
-			continue; // no title: not a game we can show (e.g. tools, leftovers)
-		}
-		out.push_back({e->d_name, name});
+		closedir(dir);
 	}
-	closedir(dir);
+	// Homebrew tiles (Payload Manager, etaHEN Toolbox, PKG Manager ...) have no /user/appmeta folder:
+	// their name is in /user/app/<id>/sce_sys/param.json (9 apps were missing from the Library, user).
+	if (DIR* apps = opendir("/user/app")) {
+		while (dirent* e = readdir(apps)) {
+			if (!is_title_id(e->d_name) ||
+			    std::any_of(out.begin(), out.end(), [&](const Game& g) { return g.tid == e->d_name; })) {
+				continue;
+			}
+			const std::string name = json_title(std::string("/user/app/") + e->d_name + "/sce_sys/param.json");
+			if (!name.empty()) {
+				out.push_back({e->d_name, name});
+			}
+		}
+		closedir(apps);
+	}
 	std::sort(out.begin(), out.end(), [](const Game& a, const Game& b) { return strcasecmp(a.name.c_str(), b.name.c_str()) < 0; });
 	return out;
 }
@@ -1536,7 +2007,26 @@ std::vector<Game> list_games() {
 // the same tile, play that game's clip (games.txt) instead of the main one; elsewhere, the main one.
 // What PLAYS for a tile: its saved clip, unless "Videos per game" is off (then the main one).
 std::string game_clip(const std::string& tid) {
-	return g_game_videos && !g_store_only ? saved_game_clip(tid) : std::string();
+	// A 4K main wallpaper pauses videos per game (user: "4K for all, or 1080p for all + per game"): every tile
+	// would switch the decoder 4K <-> 1080p (slow, black). The picks stay saved.
+	if (g_main_video && clip_is_big(g_current)) {
+		return {};
+	}
+	const std::string c = g_game_videos && !g_store_only && tid != "NPXS40047" ? saved_game_clip(tid) : std::string();
+	return clip_is_big(c) ? std::string() : c; // 4K is for the main wallpaper only: an old pick uses the main one
+}
+
+// 4K plays (v1.4, UHD stream); bigger than 4K does not: say so instead of a black screen. True = refused
+// (error set + PS5 notifications). Takes no lock.
+bool refuse_4k(const std::string& path, std::string& error) {
+	const ClipInfo ci = clip_info(path);
+	if (ci.w <= 3840 && ci.h <= 2160) {
+		return false;
+	}
+	error = "Videos bigger than 4K are not supported. Use a 4K or 1080p video.";
+	notify("Videos bigger than 4K are not supported");
+	notify("Use a 4K or 1080p video.");
+	return true;
 }
 
 // The clip saved for a tile in games.txt (the Library list shows it even when switched off).
@@ -1601,24 +2091,67 @@ void* focus_thread(void*) {
 	return nullptr;
 }
 
+// "Hide while a game is open": ShellUI must not start a video by itself (return from a game, tile move)
+// while this file says 1. Caller holds g_ctl.
+void write_game_open() {
+	write_text(kGameOpenFile, g_game_hide && g_game_open ? "1\n" : "0\n");
+	write_text("/system_tmp/liveshell/gamealive.txt", g_game_open ? "1\n" : "0\n"); // 4K: no UHD decoder then
+}
+
 // A game (not a system app, not our own window) is running: no video, the game gets the decoder.
+// "Running" = in front (the PS5 reports no running big app while it is suspended on the home screen).
+// "Open" = in front, or its app still answers in the background: for "Hide while a game is open".
 void* game_thread(void*) {
-	bool last = false;
+	bool last = false, last_open = false;
+	int  open_app = -1;
+	char open_id[32] {};
+	{
+		std::lock_guard<std::mutex> lock(g_ctl);
+		g_game_open = false;
+		write_game_open(); // a file from an earlier run must not hold the video back
+	}
 	while (g_running) {
-		sleep(2);
+		sleep(1); // 2 s before: the video came back late after a game
 		const int   app = sceSystemServiceGetAppIdOfRunningBigApp();
 		char        id[32] {};
 		const bool  now = app >= 0 && sceSystemServiceGetAppTitleId(app, id) == 0 && id[0] != 0 &&
 		                 strncmp(id, "NPXS", 4) != 0 && strcmp(id, "LVSH00001") != 0;
-		if (now == last) {
+		if (now) {
+			open_app = app;
+			snprintf(open_id, sizeof(open_id), "%s", id);
+		}
+		char       again[32] {};
+		const bool open = now || (open_app >= 0 && sceSystemServiceGetAppTitleId(open_app, again) == 0 &&
+		                          strcmp(again, open_id) == 0);
+		if (!open) {
+			open_app = -1;
+		}
+		// Our own window in front (the home screen behind it pauses the video): ShellUI must not take that for
+		// a frozen video, and plays it on when the window closes.
+		static int last_win = -1;
+		const int  win      = page_open() || (app >= 0 && strcmp(id, "LVSH00001") == 0) ? 1 : 0;
+		if (win != last_win) {
+			last_win = win;
+			write_text("/system_tmp/liveshell/window.txt", win != 0 ? "1\n" : "0\n");
+			log("window %s", win != 0 ? "in front" : "closed");
+		}
+		if (now == last && open == last_open) {
 			continue;
 		}
-		last = now;
 		std::lock_guard<std::mutex> lock(g_ctl);
-		g_game_running = now;
-		g_game_title   = now ? id : "";
-		log("game %s (%s)", now ? "started" : "closed", now ? id : "-");
-		if (g_game_pause && g_injected) {
+		if (now != last) {
+			g_game_running = now;
+			g_game_title   = now ? id : "";
+			log("game %s (%s)", now ? "started" : "closed", now ? id : "-");
+		}
+		if (open != last_open) {
+			log("game %s", open ? "open" : "no longer open (closed for good)");
+		}
+		last        = now;
+		last_open   = open;
+		g_game_open = open;
+		write_game_open();
+		if (g_injected) {
 			std::string error;
 			if (!apply_locked(error)) {
 				log("game pause: %s", error.c_str());
@@ -1707,6 +2240,23 @@ int main() {
 		g_injected = last_pid > 0;
 	}
 	start_thread(after_start_thread);
+	// Picks saved before this build: give their tiles a background too (only where one is missing).
+	{
+		const std::string text = read_text("/data/LiveShell/games.txt", 64 * 1024);
+		size_t            pos  = 0;
+		while (pos < text.size()) {
+			const size_t      end  = text.find('\n', pos);
+			const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+			const size_t      eq   = line.find('=');
+			if (eq != std::string::npos && eq > 0) {
+				ensure_tile_background(line.substr(0, eq));
+			}
+			if (end == std::string::npos) {
+				break;
+			}
+			pos = end + 1;
+		}
+	}
 	mirror_games();
 	start_thread(game_thread);
 	start_thread(focus_thread);
@@ -1784,7 +2334,7 @@ int main() {
 		unmount_window_everywhere();
 		log("LiveShell stopped (soft: OnionHEN keeps running, the idle module stays in ShellUI)");
 		notify("LiveShell Engine stopped.");
-		return 0;
+		_exit(0); // see below
 	}
 	write_text(kPathFile, "off\n");
 	if (g_stop_requested) {
@@ -1797,5 +2347,8 @@ int main() {
 	ui_forget_status();
 	log("LiveShell stopped");
 	notify("LiveShell Engine stopped.");
-	return 0;
+	// _exit, not return: with libSceNet/libSceHttp linked, a normal exit hung in their
+	// shutdown and the process stayed alive holding ports 9049/9050/9051 - the next LiveShell got a white
+	// window and no shutdown (v1.3 test).
+	_exit(0);
 }

@@ -27,7 +27,7 @@ target_link_directories(liveshell_shellui PUBLIC "${ONIONHEN_PS5_STUB_DIR}")
 target_link_libraries(liveshell_shellui PUBLIC onion_payload onion_proc onion_platform onion_detour SceNotification kernel_sys)
 onion_strip_debug(liveshell_shellui)
 
-add_executable(liveshell ${D_CWD}/liveshell_daemon.cpp ${D_CWD}/liveshell_web.cpp ${D_CWD}/liveshell_tile.cpp)
+add_executable(liveshell ${D_CWD}/liveshell_daemon.cpp ${D_CWD}/liveshell_web.cpp ${D_CWD}/liveshell_tile.cpp ${D_CWD}/zstd_decompress.c)
 set_target_properties(liveshell PROPERTIES OUTPUT_NAME "liveshell.elf")
 target_link_options(liveshell PRIVATE "-Wl,--gc-sections")
 add_dependencies(liveshell liveshell_shellui NineS onion_proc onion_platform onion_elfldr)
@@ -44,5 +44,5 @@ target_include_directories(liveshell PRIVATE
 	"${PROJECT_ROOT}/libonion_platform/include"
 	"${PROJECT_ROOT}/include")
 target_link_directories(liveshell PUBLIC "${ONIONHEN_PS5_STUB_DIR}")
-target_link_libraries(liveshell PUBLIC NineS onion_proc onion_platform onion_elfldr SceNotification SceSystemService SceUserService kernel_sys)
+target_link_libraries(liveshell PUBLIC NineS onion_proc onion_platform onion_elfldr SceNotification SceSystemService SceUserService SceHttp SceSsl SceNet kernel_sys)
 onion_strip_debug(liveshell)
