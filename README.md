@@ -44,8 +44,8 @@ Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported ye
 
 ## Discover
 
-1. Open the **Discover** tab (needs the internet).
-3. Download and Press **Use**: it plays on the home screen or per game. Downloaded wallpapers also appear in **All**.
+1. Open the **Discover** tab.
+3. Download and Press **Use**: it plays on the home screen or per game. Downloaded wallpapers also appear in **All** tab.
 
 ## A video for a game (experimental)
 
