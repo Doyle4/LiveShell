@@ -40,7 +40,8 @@ Needs a jailbroken PS5 with a payload loader.
 2. Load `liveshell.elf`.
 3. Open the **LiveShell Engine** on the home screen (Media).
 
-Videos: H.264 and HEVC Only 1080p. with or without sound and 4k not supported yet.
+Videos: H.264 or HEVC, 8-bit, up to 4K, with or without sound. 
+4K / 2K play as the main wallpaper or in PS Store only mode, and hide while a game is open.
 
 ## Discover
 
