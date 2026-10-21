@@ -7,7 +7,7 @@
 <p align="center"><b>Animated video wallpapers for the PS5 home screen.</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4-white?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-1.5-white?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/platform-PS5-white?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/video-H.264%20%7C%20HEVC%20%E2%89%A41080p-white?style=flat-square" alt="video">
   <img src="https://img.shields.io/badge/license-GPL--3.0-white?style=flat-square" alt="license">
@@ -20,6 +20,7 @@
 - **Discover**: hundreds of animated wallpapers to download right on the PS5, by category (Anime, Games, Movies, ...) the list updates by itself.
 - **Library** tab with all your games and apps, to give each one its own video (experimental).
 - **PS Store only**: the video shows only on the PlayStation Store tile, with its own video.
+- **Playlists**: your wallpaper changes by itself through the videos you pick.
 - **Sound**: videos with sound play it.
 - **Game music**: a game's own theme keeps playing when its video has no sound or Sound is on Mute
 - **Your clips** from internal storage or a USB drive
