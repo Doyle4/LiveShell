@@ -42,6 +42,7 @@ constexpr const char* kAppRoot   = "/user/app/";
 constexpr const char* kAppDir    = "/user/app/LVSH00001";
 constexpr const char* kSysDir    = "/user/app/LVSH00001/sce_sys";
 constexpr const char* kTileMarker = "/data/LiveShell/tile_added";
+constexpr const char* kNoTileFile = "/data/LiveShell/no_tile"; // this file: never add the tile (the page still works)
 constexpr uint64_t    kShellCore = 0x4801000000000013ULL;
 
 using TitleDirFn = int (*)(const char* title_id, const char* root, void* opt);
@@ -180,7 +181,7 @@ int install_tile() {
 	if (a < 0 || b < 0) {
 		return -1;
 	}
-	// Registered on every start (a tile removed from the home screen comes back). "Added"
+	// Registered only when it is missing (a removed tile comes back on the next start). "Added"
 	// notification only when the tile was NOT installed before this start (AppExists); the old
 	// marker file stayed after the tile was deleted, so the notice never came back (test 33).
 	bool first = access(kTileMarker, F_OK) != 0; // fallback if AppExists is unavailable
@@ -207,6 +208,22 @@ int install_tile() {
 		}
 		g_inst_term();
 		log("tile: installed before this start: %s", first ? "no" : "yes");
+		if (!first) {
+			// Already on the home screen: nothing to do. Registering again on every start ran AppInstallAll
+			// where the per-title call is missing (fw without AppInstallTitleDir), and that re-registers
+			// EVERY app: app.db rows rewritten, custom icons (YTJB) and edits (a Home hub) lost (issue #10).
+			return 0;
+		}
+	}
+	if (g_title_dir == nullptr && !first) {
+		return 0; // no AppExists to ask, but the tile was added once: never AppInstallAll again
+	}
+	if (access(kNoTileFile, F_OK) == 0) {
+		log("tile: %s exists, the tile is not added", kNoTileFile);
+		return 0;
+	}
+	if (g_title_dir == nullptr) {
+		log("tile: no AppInstallTitleDir on this firmware: AppInstallAll, once (it re-registers every app)");
 	}
 
 	int rc = register_once();

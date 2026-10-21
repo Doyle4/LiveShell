@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <arpa/inet.h>
 #include <cctype>
 #include <cerrno>
@@ -58,6 +59,9 @@ int       sceKernelOpenEventFlag(intptr_t* event_flag, const char* name);
 int       sceKernelPollEventFlag(intptr_t event_flag, uint64_t bits, unsigned int wait_mode, uint64_t* result);
 int       sceKernelCloseEventFlag(intptr_t event_flag);
 int  sceKernelSendNotificationRequest(int, void*, size_t, int);
+int  sceUserServiceInitialize(void* params);
+int  sceUserServiceGetForegroundUser(int32_t* user_id);
+int  sceUserServiceGetUserName(int32_t user_id, char* name, size_t size);
 extern uint8_t liveshell_shellui_elf_start[];
 }
 
@@ -78,10 +82,10 @@ constexpr const char* kStatusFile     = "/system_tmp/liveshell/status.txt";
 constexpr const char* kShellUiLog     = "/system_tmp/liveshell/shellui.log";
 constexpr const char* kDimFile        = "/system_tmp/liveshell/dim.txt";
 constexpr const char* kVolumeFile     = "/system_tmp/liveshell/volume.txt";
-constexpr const char* kBlurFile       = "/system_tmp/liveshell/blur.txt";
 constexpr const char* kMenusFile      = "/system_tmp/liveshell/menus.txt";
 constexpr const char* kStoreOnlyFile  = "/system_tmp/liveshell/storeonly.txt";
 constexpr const char* kLooksFile      = "/system_tmp/liveshell/looks.txt";
+constexpr const char* kPlaylistsBak  = "/data/LiveShell/playlists.bak"; // the playlists before the last save
 constexpr const char* kParallaxFile   = "/system_tmp/liveshell/parallax.txt";
 constexpr const char* kLogFile        = "/data/LiveShell/liveshell.log";
 constexpr const char* kConfigFile     = "/data/LiveShell/config.txt";
@@ -101,9 +105,20 @@ std::mutex    g_log_lock;
 // Control state; g_ctl guards everything below it.
 std::mutex  g_ctl;
 bool        g_enabled  = true;
+bool        g_user_off = false; // the signed-in user is switched off in Settings -> Users (nothing saved changes)
+std::string g_off_users;        // ",<id>,<id>," users LiveShell does not play for
+struct Playlist {
+	std::string              name;
+	bool                     on      = false;
+	int                      every   = 5;     // minutes
+	bool                     shuffle = false;
+	std::vector<std::string> videos;          // real paths
+};
+std::vector<Playlist> g_playlists;     // one is on at most (guarded by g_ctl)
+time_t                g_cycle_at = 0;  // when the main wallpaper last changed (by hand or by a playlist)
+std::atomic<int32_t> g_fg_user {-1}; // the signed-in console user (-1 = not known yet)
 int         g_dim      = 25;    // default on: clips are often bright
 int         g_volume   = 100;   // sound of clips that have it, 0..100 %
-int         g_blur     = 0;     // 0 off, 1 light, 2 strong
 int         g_looks[4] = {0, 0, 0, 0}; // bottom fade, top fade, vignette, haze: 0 off, 1 light, 2 strong
 bool        g_shuffle  = false; // a random clip each time the payload starts (off by default)
 bool        g_main_video = true; // off = only tiles with their own video play one
@@ -112,6 +127,10 @@ bool        g_game_pause = true; // no video while a game runs
 bool        g_menu_hide  = true;  // hide the video in Settings / system apps (default: safer)
 bool        g_store_only = false; // video only while the PS Store tile is highlighted (off by default)
 bool        g_parallax   = false; // nudge the video when moving between home tiles
+bool        g_auto_match = false; // Auto-match (off by default, user)
+int         g_tint       = 0;     // Picture -> Colour: 0 neutral, 1 warm, 2 cool, 3 rose, 4 teal, 5 violet
+int         g_launchfx   = 0;     // game launch effect: 0 fade, 1 dive, 2 pull back (ShellUI reads launchfx.txt)
+bool        g_resume     = false; // Resume after a game (experimental, off by default): ShellUI reads resume.txt: a note when Discover has wallpapers for a game without its own video
 bool        g_game_running = false;
 bool        g_game_hide    = false; // option: no video on the home screen while a game is open (suspended)
 bool        g_game_open    = false; // a game is open, in front or suspended in the background
@@ -373,8 +392,6 @@ void load_config() {
 				v = std::max(0, std::min(2, v));
 			}
 			g_looks[0] = g_looks[1] = 0; // bottom / top fade were removed (user)
-		} else if (line.rfind("blur=", 0) == 0) {
-			g_blur = std::max(0, std::min(2, atoi(line.c_str() + 5)));
 		} else if (line.rfind("gamevideos=", 0) == 0) {
 			g_game_videos = line.substr(11) != "0";
 		} else if (line.rfind("mainvideo=", 0) == 0) {
@@ -387,6 +404,16 @@ void load_config() {
 			g_parallax = line.substr(9) != "0";
 		} else if (line.rfind("gamehide=", 0) == 0) {
 			g_game_hide = line.substr(9) != "0";
+		} else if (line.rfind("offusers=", 0) == 0) {
+			g_off_users = line.substr(9);
+		} else if (line.rfind("tint=", 0) == 0) {
+			g_tint = std::max(0, std::min(5, atoi(line.c_str() + 5)));
+		} else if (line.rfind("launchfx=", 0) == 0) {
+			g_launchfx = std::max(0, std::min(2, atoi(line.c_str() + 9)));
+		} else if (line.rfind("resume=", 0) == 0) {
+			g_resume = line.substr(7) == "1";
+		} else if (line.rfind("automatch=", 0) == 0) {
+			g_auto_match = line.substr(10) == "1";
 		} else if (line.rfind("menuhide=", 0) == 0) {
 			g_menu_hide = line.substr(9) != "0";
 		} else if (line.rfind("storeonly=", 0) == 0) {
@@ -403,16 +430,18 @@ void load_config() {
 	    g_shuffle ? 1 : 0, g_game_pause ? 1 : 0);
 	write_text(kDimFile, std::to_string(g_dim) + "\n");
 	write_text(kVolumeFile, std::to_string(g_volume) + "\n");
-	write_text(kBlurFile, std::to_string(g_blur) + "\n");
 	write_text(kMenusFile, g_menu_hide ? "1\n" : "0\n");
 	write_text(kStoreOnlyFile, g_store_only ? "1\n" : "0\n");
 	write_looks();
 	write_text(kParallaxFile, g_parallax ? "1\n" : "0\n");
+	write_text("/system_tmp/liveshell/resume.txt", g_resume ? "1\n" : "0\n");
+	write_text("/system_tmp/liveshell/launchfx.txt", std::to_string(g_launchfx) + "\n");
+	write_text("/system_tmp/liveshell/tint.txt", std::to_string(g_tint) + "\n");
 }
 
 void save_config() {
-	write_text(kConfigFile, std::string("enabled=") + (g_enabled ? "1" : "0") + "\nvideo=" + g_current + "\ndim=" + std::to_string(g_dim) + "\nvolume=" + std::to_string(g_volume) + "\nblur=" + std::to_string(g_blur) + "\nlooks=" + looks_text() +
-	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=1\npergameonly=" + (g_main_video ? "0" : "1") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nstoreonly=" + (g_store_only ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\ngamehide=" + (g_game_hide ? "1" : "0") + "\n");
+	write_text(kConfigFile, std::string("enabled=") + (g_enabled ? "1" : "0") + "\nvideo=" + g_current + "\ndim=" + std::to_string(g_dim) + "\nvolume=" + std::to_string(g_volume) + "\nlooks=" + looks_text() +
+	                            "\nshuffle=" + (g_shuffle ? "1" : "0") + "\nmainvideo=1\npergameonly=" + (g_main_video ? "0" : "1") + "\ngamevideos=" + (g_game_videos ? "1" : "0") + "\ngamepause=" + (g_game_pause ? "1" : "0") + "\nmenuhide=" + (g_menu_hide ? "1" : "0") + "\nstoreonly=" + (g_store_only ? "1" : "0") + "\nparallax=" + (g_parallax ? "1" : "0") + "\nautomatch=" + (g_auto_match ? "1" : "0") + "\nresume=" + (g_resume ? "1" : "0") + "\nlaunchfx=" + std::to_string(g_launchfx) + "\ntint=" + std::to_string(g_tint) + "\noffusers=" + g_off_users + "\ngamehide=" + (g_game_hide ? "1" : "0") + "\n");
 }
 
 // ---- telling ShellUI what to play ------------------------------------------------------------
@@ -576,6 +605,11 @@ std::string store_clip() {
 }
 
 // Caller holds g_ctl. Every change also refreshes ShellUI's fast-switch map.
+// The wallpaper plays: switched on, and the signed-in user is not switched off (Settings -> Users). Caller holds g_ctl.
+bool on_now() {
+	return g_enabled && !g_user_off;
+}
+
 bool apply_locked(std::string& error) {
 	const bool ok = apply_inner(error);
 	write_fast_map();
@@ -588,12 +622,12 @@ bool apply_inner(std::string& error) {
 	                         : !g_override.empty() ? g_override : (g_main_video ? g_current : std::string());
 	// Videos per game only, a tile without a video: ShellUI hides the running one (fast.txt "*=hide"); stopping it
 	// here was what made the old "Main video off" flash on every tile move.
-	if (!g_store_only && !g_main_video && g_override.empty() && g_enabled) {
+	if (!g_store_only && !g_main_video && g_override.empty() && on_now()) {
 		return true;
 	}
 	// Same folder while a clip plays: quick swap in ShellUI (fade to black, swap, fade in), no
 	// release wait: the folder stays mounted (the full stop took ~4 s per switch, test v11-4).
-	if (g_injected && g_enabled && !(g_game_pause && g_game_running) && !(g_game_hide && g_game_open) &&
+	if (g_injected && on_now() && !(g_game_pause && g_game_running) && !(g_game_hide && g_game_open) &&
 	    !clip.empty() && exists(clip.c_str()) &&
 	    mount_base(clip) == g_mounted_folder &&
 	    (shellui_status().rfind("playing", 0) == 0 || shellui_status().rfind("starting", 0) == 0)) {
@@ -604,7 +638,7 @@ bool apply_inner(std::string& error) {
 		log("apply: quick swap to %s", clip.c_str());
 		return true;
 	}
-	const bool want_video = g_enabled && !(g_game_pause && g_game_running) && !(g_game_hide && g_game_open) &&
+	const bool want_video = on_now() && !(g_game_pause && g_game_running) && !(g_game_hide && g_game_open) &&
 	                        !clip.empty() && exists(clip.c_str());
 	if (want_video && g_injected && mount_base(clip) == g_mounted_folder) {
 		const std::string st = shellui_status();
@@ -955,7 +989,7 @@ void* after_start_thread(void*) {
 	bool want_video;
 	{
 		std::lock_guard<std::mutex> lock(g_ctl);
-		want_video = g_enabled && !g_current.empty();
+		want_video = on_now() && !g_current.empty();
 	}
 	if (want_video) {
 		for (int i = 0; i < 400 && shellui_status().rfind("playing", 0) != 0; ++i) {
@@ -1176,7 +1210,6 @@ State get_state() {
 		st.current = g_current;
 		st.dim     = g_dim;
 		st.volume  = g_volume;
-		st.blur    = g_blur;
 		for (int l = 0; l < 4; ++l) {
 			st.looks[l] = g_looks[l];
 		}
@@ -1187,6 +1220,16 @@ State get_state() {
 		st.menu_hide  = g_menu_hide;
 		st.store_only = g_store_only;
 		st.parallax   = g_parallax;
+		st.auto_match = g_auto_match;
+		st.resume     = g_resume;
+		st.launchfx   = g_launchfx;
+		st.pl_bak     = exists(kPlaylistsBak);
+		st.tint       = g_tint;
+		for (const Playlist& p : g_playlists) {
+			if (p.on) {
+				st.playlist = p.name;
+			}
+		}
 		st.game_hide  = g_game_hide;
 		st.game       = g_game_running ? g_game_title : std::string();
 	}
@@ -1194,6 +1237,8 @@ State get_state() {
 	st.videos = list_videos();
 	return st;
 }
+
+void save_user_wall(const std::string& path); // Users: the signed-in user's own main wallpaper
 
 bool select_video(const std::string& path, std::string& error) {
 	if (!exists(path.c_str())) {
@@ -1205,8 +1250,10 @@ bool select_video(const std::string& path, std::string& error) {
 	}
 	std::lock_guard<std::mutex> lock(g_ctl);
 	const bool was_4k = clip_is_big(g_current);
-	g_current = path;
-	g_enabled = true;
+	g_current  = path;
+	g_enabled  = true;
+	g_cycle_at = time(nullptr);
+	save_user_wall(path); // this user's own wallpaper
 	save_config(); // g_override stays: a highlighted game's own clip wins over the main video
 	if (g_main_video && clip_is_big(path)) {
 		g_override.clear(); // 4K main: every tile shows it (videos per game pause)
@@ -1253,12 +1300,20 @@ void set_look(const std::string& key, int level) {
 	}
 }
 
-void set_blur(int level) {
+void set_tint(int t) {
 	std::lock_guard<std::mutex> lock(g_ctl);
-	g_blur = std::max(0, std::min(2, level));
+	g_tint = std::max(0, std::min(5, t));
 	save_config();
-	write_text(kBlurFile, std::to_string(g_blur) + "\n");
-	log("blur: %d", g_blur);
+	write_text("/system_tmp/liveshell/tint.txt", std::to_string(g_tint) + "\n");
+	log("colour: %d", g_tint);
+}
+
+void set_launchfx(int mode) {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	g_launchfx = std::max(0, std::min(2, mode));
+	save_config();
+	write_text("/system_tmp/liveshell/launchfx.txt", std::to_string(g_launchfx) + "\n");
+	log("launch effect: %d", g_launchfx);
 }
 
 bool set_enabled(bool on, std::string& error) {
@@ -1270,6 +1325,348 @@ bool set_enabled(bool on, std::string& error) {
 	}
 	save_config();
 	return apply_locked(error);
+}
+
+// ---- Playlists -----------------------------------------------------------------------------------
+constexpr const char* kPlaylistsFile = "/data/LiveShell/playlists.txt";
+
+// P/V lines -> playlists (also the page's POST). Bad lines are skipped; at most one stays on.
+std::vector<Playlist> parse_playlists(const std::string& text) {
+	std::vector<Playlist> out;
+	size_t pos = 0;
+	while (pos < text.size() && out.size() <= 60) {
+		size_t end = text.find('\n', pos);
+		if (end == std::string::npos) {
+			end = text.size();
+		}
+		std::string line = text.substr(pos, end - pos);
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();
+		}
+		pos = end + 1;
+		std::vector<std::string> f;
+		for (size_t a = 0;;) {
+			const size_t t = line.find('\t', a);
+			f.push_back(line.substr(a, t == std::string::npos ? std::string::npos : t - a));
+			if (t == std::string::npos) {
+				break;
+			}
+			a = t + 1;
+		}
+		if (f[0] == "P" && f.size() >= 5) {
+			Playlist p;
+			for (const char ch : f[1].substr(0, 40)) {
+				p.name += static_cast<unsigned char>(ch) < 0x20 || ch == '"' || ch == '\\' ? ' ' : ch;
+			}
+			if (p.name.empty()) {
+				p.name = "Playlist";
+			}
+			p.on      = f[2] == "1";
+			p.every   = std::max(1, std::min(240, atoi(f[3].c_str())));
+			p.shuffle = f[4] == "1";
+			out.push_back(p);
+		} else if (f[0] == "V" && f.size() >= 2 && !out.empty() && out.back().videos.size() < 5000 &&
+		           f[1].rfind("/", 0) == 0 && f[1].find("..") == std::string::npos && is_mp4(f[1].c_str())) {
+			out.back().videos.push_back(f[1]);
+		}
+	}
+	bool seen_on = false;
+	for (Playlist& p : out) {
+		p.on    = p.on && !seen_on;
+		seen_on = seen_on || p.on;
+	}
+	return out;
+}
+
+std::string playlists_text(const std::vector<Playlist>& pls) {
+	std::string t;
+	for (const Playlist& p : pls) {
+		t += "P\t" + p.name + "\t" + (p.on ? "1" : "0") + "\t" + std::to_string(p.every) + "\t" + (p.shuffle ? "1" : "0") + "\n";
+		for (const std::string& v : p.videos) {
+			t += "V\t" + v + "\n";
+		}
+	}
+	return t;
+}
+
+void load_playlists_locked() { // caller holds g_ctl
+	const std::string text = read_text(kPlaylistsFile, 2 * 1024 * 1024);
+	g_playlists            = parse_playlists(text);
+	if (g_playlists.empty() && (!exists(kPlaylistsFile) || !text.empty())) { // gone or unreadable (an empty file = deleted on purpose)
+		const std::string bak = read_text(kPlaylistsBak, 2 * 1024 * 1024);
+		std::vector<Playlist> back = parse_playlists(bak);
+		if (!back.empty() && write_text(kPlaylistsFile, bak)) {
+			g_playlists = back;
+			log("playlists: %s, %zu restored from the backup", text.empty() ? "file missing" : "file unreadable", back.size());
+		}
+	}
+	g_cycle_at = time(nullptr);
+}
+
+// "Undo last change": the backup and the list swap places (so a second press redoes).
+bool restore_playlists(std::string& error) {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	if (!exists(kPlaylistsBak)) {
+		error = "No earlier playlists to go back to";
+		return false;
+	}
+	const std::string now = read_text(kPlaylistsFile, 2 * 1024 * 1024), bak = read_text(kPlaylistsBak, 2 * 1024 * 1024);
+	if (!write_text(kPlaylistsFile, bak) || !write_text(kPlaylistsBak, now)) {
+		error = "Could not restore the playlists";
+		return false;
+	}
+	g_playlists = parse_playlists(bak);
+	g_cycle_at  = time(nullptr);
+	log("playlists: undo, %zu playlists back", g_playlists.size());
+	return true;
+}
+
+// Playlists per user is gone: playlists made that way (playlists_<user id>.txt) join the shared list once.
+void merge_user_playlists() {
+	std::vector<Playlist>    all = parse_playlists(read_text(kPlaylistsFile, 2 * 1024 * 1024));
+	std::vector<std::string> files;
+	if (DIR* d = opendir("/data/LiveShell")) {
+		while (dirent* e = readdir(d)) {
+			const std::string fn = e->d_name;
+			if (fn.rfind("playlists_", 0) == 0 && fn.size() > 14 && fn.compare(fn.size() - 4, 4, ".txt") == 0) {
+				files.push_back("/data/LiveShell/" + fn);
+			}
+		}
+		closedir(d);
+	}
+	if (files.empty()) {
+		return;
+	}
+	auto same = [](Playlist p) { p.on = false; return playlists_text({p}); };
+	bool has_on = false;
+	for (const Playlist& p : all) {
+		has_on = has_on || p.on;
+	}
+	for (const std::string& file : files) {
+		for (Playlist& p : parse_playlists(read_text(file.c_str(), 2 * 1024 * 1024))) {
+			bool dup = false;
+			for (const Playlist& q : all) {
+				dup = dup || same(q) == same(p);
+			}
+			if (!dup && all.size() < 60) {
+				p.on   = p.on && !has_on;
+				has_on = has_on || p.on;
+				all.push_back(p);
+			}
+		}
+	}
+	if (write_text(kPlaylistsFile, playlists_text(all))) {
+		for (const std::string& file : files) {
+			unlink(file.c_str());
+		}
+	}
+	log("playlists: %zu files of per-user playlists merged, %zu playlists", files.size(), all.size());
+}
+
+void load_playlists() {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	merge_user_playlists();
+	load_playlists_locked();
+}
+
+bool set_playlists(const std::string& text, std::string& error) {
+	std::vector<Playlist> pls = parse_playlists(text);
+	std::lock_guard<std::mutex> lock(g_ctl);
+	std::string before, after;
+	for (const Playlist& p : g_playlists) {
+		before += p.on ? p.name : "";
+	}
+	for (const Playlist& p : pls) {
+		after += p.on ? p.name : "";
+	}
+	g_playlists = pls;
+	if (before != after) {
+		g_cycle_at = time(nullptr); // a playlist (re)starts: its first change after its own wait
+	}
+	const std::string old_text = read_text(kPlaylistsFile, 2 * 1024 * 1024), new_text = playlists_text(g_playlists);
+	if (old_text != new_text && exists(kPlaylistsFile)) {
+		write_text(kPlaylistsBak, old_text); // the list before this save (Undo, and the start-up restore)
+	}
+	if (!write_text(kPlaylistsFile, new_text)) {
+		error = "Could not save the playlists";
+		return false;
+	}
+	log("playlists: %zu saved, on: %s", g_playlists.size(), after.empty() ? "none" : after.c_str());
+	return true;
+}
+
+std::string playlists_json() {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	std::string j = "[";
+	for (size_t i = 0; i < g_playlists.size(); ++i) {
+		const Playlist& p = g_playlists[i];
+		j += std::string(i ? "," : "") + "{\"name\":\"" + p.name + "\",\"on\":" + (p.on ? "true" : "false") + ",\"every\":" +
+		     std::to_string(p.every) + ",\"shuffle\":" + (p.shuffle ? "true" : "false") + ",\"videos\":[";
+		for (size_t k = 0; k < p.videos.size(); ++k) {
+			std::string v;
+			for (const char ch : p.videos[k]) {
+				v += ch == '"' || ch == '\\' ? '_' : ch;
+			}
+			j += std::string(k ? "," : "") + "\"" + v + "\"";
+		}
+		j += "]}";
+	}
+	return j + "]";
+}
+
+// ---- Users: LiveShell only for the console users that are on --------------------------------------
+std::mutex g_users_lock; // users.txt, userwall.txt
+
+std::string user_name(int32_t id) {
+	char name[64] {};
+	return sceUserServiceGetUserName(id, name, sizeof(name)) == 0 ? std::string(name) : std::string();
+}
+
+// Remembers a user (id=name per line), so Settings can list everyone who signed in since LiveShell came.
+void remember_user(int32_t id, const std::string& name) {
+	std::lock_guard<std::mutex> lock(g_users_lock);
+	const std::string text = read_text("/data/LiveShell/users.txt", 16 * 1024);
+	const std::string key  = std::to_string(id) + "=";
+	if (("\n" + text).find("\n" + key) == std::string::npos && !name.empty()) {
+		write_text("/data/LiveShell/users.txt", text + key + name + "\n");
+	}
+}
+
+// Each user's own main wallpaper: userwall.txt "id=path", written whenever the main wallpaper changes.
+std::string user_wall(int32_t id) {
+	std::lock_guard<std::mutex> lock(g_users_lock);
+	const std::string text = "\n" + read_text("/data/LiveShell/userwall.txt", 64 * 1024);
+	const std::string key  = "\n" + std::to_string(id) + "=";
+	const size_t      at   = text.find(key);
+	if (at == std::string::npos) {
+		return {};
+	}
+	const size_t end = text.find('\n', at + key.size());
+	return text.substr(at + key.size(), end == std::string::npos ? std::string::npos : end - at - key.size());
+}
+
+void save_user_wall(const std::string& path) {
+	const int32_t id = g_fg_user.load();
+	if (id < 0) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(g_users_lock);
+	const std::string text = read_text("/data/LiveShell/userwall.txt", 64 * 1024);
+	std::string out, key = std::to_string(id) + "=";
+	size_t pos = 0;
+	while (pos < text.size()) {
+		const size_t end = text.find('\n', pos);
+		const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+		if (!line.empty() && line.rfind(key, 0) != 0) {
+			out += line + "\n";
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		pos = end + 1;
+	}
+	write_text("/data/LiveShell/userwall.txt", out + key + path + "\n");
+}
+
+// The user's PS5 profile picture (only users with an online profile have one).
+std::string user_avatar(int id) {
+	char path[96];
+	snprintf(path, sizeof(path), "/system_data/priv/cache/profile/0x%08X/avatar.png", static_cast<unsigned>(id));
+	return read_text(path, 2 * 1024 * 1024);
+}
+
+// Every account on the console (user_list.dat), with its name: Settings -> Users lists them all from the start.
+void load_all_users() {
+	const std::string list = read_text("/system_data/priv/home/user_list.dat", 4096);
+	std::string       out;
+	std::set<uint32_t> seen; // the 16 slots only: after them the file keeps the id the NEXT new account gets
+	for (size_t at = 0; at + 4 <= list.size() && at < 16 * 4; at += 4) {
+		const uint32_t id = static_cast<uint32_t>(static_cast<unsigned char>(list[at])) |
+		                    static_cast<uint32_t>(static_cast<unsigned char>(list[at + 1])) << 8 |
+		                    static_cast<uint32_t>(static_cast<unsigned char>(list[at + 2])) << 16 |
+		                    static_cast<uint32_t>(static_cast<unsigned char>(list[at + 3])) << 24;
+		if (id == 0 || id == 0xFFFFFFFFu || id > 0x7FFFFFFFu || !seen.insert(id).second) {
+			continue;
+		}
+		std::string name = user_name(static_cast<int32_t>(id));
+		if (name.empty()) { // not signed in: the name in its config.dat
+			char path[96];
+			snprintf(path, sizeof(path), "/system_data/priv/home/%x/config.dat", id);
+			const std::string cfg = read_text(path, 64);
+			for (size_t k = 4; k < cfg.size() && k < 4 + 32 && cfg[k] != 0; ++k) {
+				name += cfg[k] == '\n' || cfg[k] == '=' ? ' ' : cfg[k];
+			}
+		}
+		if (!name.empty()) {
+			out += std::to_string(id) + "=" + name + "\n";
+		}
+	}
+	if (out.empty()) {
+		return; // the list could not be read: users.txt stays as it is (users who signed in)
+	}
+	std::lock_guard<std::mutex> lock(g_users_lock);
+	write_text("/data/LiveShell/users.txt", out);
+	log("users: %s", out.c_str());
+}
+
+bool user_is_off(int32_t id) {
+	return g_off_users.find("," + std::to_string(id) + ",") != std::string::npos;
+}
+
+bool set_user_on(int id, bool on) {
+	std::lock_guard<std::mutex> lock(g_ctl);
+	const std::string key = "," + std::to_string(id) + ",";
+	if (g_off_users.empty()) {
+		g_off_users = ",";
+	}
+	const size_t at = g_off_users.find(key);
+	if (on && at != std::string::npos) {
+		g_off_users.erase(at, key.size() - 1);
+	} else if (!on && at == std::string::npos) {
+		g_off_users += std::to_string(id) + ",";
+	}
+	if (g_off_users == ",") {
+		g_off_users.clear();
+	}
+	save_config();
+	const bool off = g_fg_user >= 0 && user_is_off(g_fg_user);
+	log("users: %d %s (off: %s)", id, on ? "on" : "off", g_off_users.c_str());
+	if (off != g_user_off) {
+		g_user_off = off;
+		std::string error;
+		apply_locked(error);
+	}
+	return true;
+}
+
+std::string users_json() {
+	std::string text, out;
+	int32_t     now = -1;
+	{
+		std::lock_guard<std::mutex> lock(g_users_lock);
+		text = read_text("/data/LiveShell/users.txt", 16 * 1024);
+		now  = g_fg_user.load();
+	}
+	std::lock_guard<std::mutex> lock(g_ctl);
+	size_t pos = 0;
+	while (pos < text.size()) {
+		const size_t end = text.find('\n', pos), eq = text.find('=', pos);
+		const std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+		if (eq != std::string::npos && eq < (end == std::string::npos ? text.size() : end)) {
+			const int id = atoi(line.c_str());
+			std::string name;
+			for (const char ch : line.substr(eq - pos + 1)) {
+				name += ch == '"' || ch == '\\' ? ' ' : ch;
+			}
+			out += std::string(out.empty() ? "" : ",") + "{\"id\":" + std::to_string(id) + ",\"name\":\"" + name + "\",\"on\":" +
+			       (user_is_off(id) ? "false" : "true") + ",\"now\":" + (id == now ? "true" : "false") + "}";
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		pos = end + 1;
+	}
+	return "[" + out + "]";
 }
 
 bool set_option(const std::string& key, bool on, std::string& error) {
@@ -1296,6 +1693,11 @@ bool set_option(const std::string& key, bool on, std::string& error) {
 	} else if (key == "gamepause") {
 		g_game_pause = true; // not a setting any more (always on)
 		(void)on;
+	} else if (key == "resume") {
+		g_resume = on;
+		write_text("/system_tmp/liveshell/resume.txt", on ? "1\n" : "0\n");
+	} else if (key == "automatch") {
+		g_auto_match = on;
 	} else if (key == "parallax") {
 		g_parallax = on;
 		write_text(kParallaxFile, on ? "1\n" : "0\n");
@@ -1392,7 +1794,6 @@ bool reset_settings(std::string& error) {
 	g_dim        = 25;
 	g_volume     = 100;
 	write_text(kVolumeFile, "100\n");
-	g_blur       = 0;
 	for (int& v : g_looks) {
 		v = 0;
 	}
@@ -1406,6 +1807,18 @@ bool reset_settings(std::string& error) {
 	write_text(kStoreOnlyFile, "0\n");
 	g_parallax   = false;
 	write_text(kParallaxFile, "0\n");
+	g_auto_match = false;
+	g_resume     = false;
+	write_text("/system_tmp/liveshell/resume.txt", "0\n");
+	g_launchfx   = 0;
+	write_text("/system_tmp/liveshell/launchfx.txt", "0\n");
+	g_tint       = 0;
+	write_text("/system_tmp/liveshell/tint.txt", "0\n");
+	for (Playlist& p : g_playlists) {
+		p.on = false; // reset: playlists are kept, none plays
+	}
+	g_off_users.clear();
+	g_user_off = false;
 	g_game_hide  = false;
 	write_game_open();
 	write_text(kMenusFile, "1\n");
@@ -1415,7 +1828,6 @@ bool reset_settings(std::string& error) {
 	}
 	save_config();
 	write_text(kDimFile, std::to_string(g_dim) + "\n");
-	write_text(kBlurFile, "0\n");
 	log("settings reset");
 	return apply_locked(error);
 }
@@ -1682,6 +2094,7 @@ struct ClipInfo {
 	int         bits   = 8;     // bit depth (luma)
 	int         chroma = 1;     // 1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4
 	bool        cut    = false; // the file ends before its last box does
+	bool        frag   = false; // fragmented MP4 (samples in moof boxes - streaming downloads): Sony's player refuses it
 };
 
 ClipInfo clip_info(const std::string& path) {
@@ -1728,6 +2141,7 @@ ClipInfo clip_info(const std::string& path) {
 				const size_t n = static_cast<size_t>(std::min<long long>(size, 8 * 1024 * 1024));
 				std::string  moov(n, '\0');
 				if (pread(fd, &moov[0], n, off) == static_cast<ssize_t>(n)) {
+					ci.frag = moov.find("mvex") != std::string::npos; // "movie extends": the samples come in moof boxes
 					auto u8 = [&](size_t at) -> int { return at < n ? static_cast<unsigned char>(moov[at]) : 0; };
 					auto be16 = [&](size_t at) -> uint32_t { return (static_cast<uint32_t>(u8(at)) << 8) | static_cast<uint32_t>(u8(at + 1)); };
 					auto be32 = [&](size_t at) -> uint32_t { return (be16(at) << 16) | be16(at + 2); };
@@ -1831,6 +2245,9 @@ std::string clip_problem(const std::string& path) {
 	if (ci.cut) {
 		return "The file is cut off - download it again";
 	}
+	if (ci.frag) {
+		return "Fragmented MP4 - press Convert it on your phone or PC, or download it again";
+	}
 	const bool uhd = ci.w > 1920 || ci.h > 1088; // 4K: the UHD decoder (H.264 up to 5.2, HEVC up to 5.1)
 	if (ci.w > 3840 || ci.h > 2160) {
 		snprintf(why, sizeof(why), "Too big (%ux%u) - max 3840x2160", ci.w, ci.h);
@@ -1854,7 +2271,7 @@ std::string clip_problem(const std::string& path) {
 void write_fast_map() {
 	// Wallpaper off: every tile "off", so ShellUI starts nothing by itself (a highlighted tile or the
 	// return from a game started the video again while Settings still said off).
-	if (!g_enabled) {
+	if (!on_now()) {
 		write_text("/system_tmp/liveshell/fast.txt", "*=off\n");
 		return;
 	}
@@ -2043,8 +2460,9 @@ std::string saved_game_clip(const std::string& tid) {
 	return text.substr(at + tid.size() + 1, end == std::string::npos ? std::string::npos : end - at - tid.size() - 1);
 }
 
+
 void* focus_thread(void*) {
-	std::string seen, pending;
+	std::string seen, pending, match; // match: a newly decided game tile for Auto-match (checked outside g_ctl)
 	long        changed_ms = 0;
 	auto        now_ms     = [] {
         timespec ts {};
@@ -2071,7 +2489,7 @@ void* focus_thread(void*) {
 			clip.clear();
 		}
 		std::lock_guard<std::mutex> lock(g_ctl);
-		if (!g_injected || !g_enabled || g_game_running) {
+		if (!g_injected || !on_now() || g_game_running) {
 			continue; // not now: decide again once we can switch (pending unchanged)
 		}
 		if (tid != pending) {
@@ -2086,6 +2504,109 @@ void* focus_thread(void*) {
 		std::string error;
 		if (!apply_locked(error)) {
 			log("per-game: %s", error.c_str());
+		}
+	}
+	return nullptr;
+}
+
+// Users: who is signed in (every 2 s). A user switched off in Settings gets the normal PS5 background.
+void* user_thread(void*) {
+	sceUserServiceInitialize(nullptr); // "already initialized" is fine
+	load_all_users();                  // every account, not only the ones that signed in since LiveShell came
+	int32_t last = -2;
+	long    list_mtime = 0;
+	while (g_running) {
+		struct stat ls {};
+		if (stat("/system_data/priv/home/user_list.dat", &ls) == 0 && static_cast<long>(ls.st_mtime) != list_mtime) {
+			if (list_mtime != 0) {
+				load_all_users(); // an account was added or deleted
+			}
+			list_mtime = static_cast<long>(ls.st_mtime);
+		}
+		int32_t id = -1;
+		if (sceUserServiceGetForegroundUser(&id) == 0 && id >= 0 && id != last) {
+			last = id;
+			const std::string name = user_name(id);
+			remember_user(id, name);
+			g_fg_user = id;
+			const std::string mine = user_wall(id); // this user's own main wallpaper
+			std::lock_guard<std::mutex> lock(g_ctl);
+			const bool off = user_is_off(id);
+			log("users: %s (%d) signed in%s", name.c_str(), id, off ? " - LiveShell is off for this user" : "");
+			bool redo = off != g_user_off;
+			g_user_off = off;
+			if (!mine.empty() && mine != g_current && exists(mine.c_str())) {
+				g_current = mine;
+				save_config();
+				log("users: %s's own wallpaper %s", name.c_str(), mine.c_str());
+				redo = true;
+			}
+			if (redo) {
+				std::string error;
+				apply_locked(error);
+			}
+		}
+		sleep(2);
+	}
+	return nullptr;
+}
+
+// Playlists: the one that is on changes the main wallpaper every N minutes (in order or shuffled), through its
+// videos that are still there and play. Not while a game runs or the wallpaper is off / hidden; a hand pick starts
+// the wait again. Only the main wallpaper: a tile's own video still wins on that tile.
+void* cycle_thread(void*) {
+	while (g_running) {
+		sleep(5);
+		std::string current;
+		Playlist    pl;
+		{
+			std::lock_guard<std::mutex> lock(g_ctl);
+			const Playlist* on = nullptr;
+			for (const Playlist& p : g_playlists) {
+				on = p.on ? &p : on;
+			}
+			if (on == nullptr || !on_now() || !g_injected || g_game_running || g_game_open || g_store_only || !g_main_video) {
+				if (on == nullptr || g_cycle_at == 0) {
+					g_cycle_at = time(nullptr);
+				}
+				continue;
+			}
+			if (time(nullptr) - g_cycle_at < static_cast<time_t>(on->every) * 60) {
+				continue;
+			}
+			current = g_current;
+			pl      = *on;
+		}
+		std::vector<std::string> pool;
+		for (const std::string& v : pl.videos) {
+			if (exists(v.c_str()) && clip_problem(v).empty() && std::find(pool.begin(), pool.end(), v) == pool.end()) {
+				pool.push_back(v);
+			}
+		}
+		std::lock_guard<std::mutex> lock(g_ctl);
+		g_cycle_at = time(nullptr);
+		if (pool.empty() || current != g_current || (pool.size() == 1 && pool[0] == current)) {
+			continue; // nothing to change to, or the user just picked one
+		}
+		auto next = pool.begin();
+		if (pl.shuffle && pool.size() > 1) {
+			do {
+				next = pool.begin() + static_cast<long>(static_cast<unsigned>(rand()) % pool.size());
+			} while (*next == current);
+		} else {
+			const auto at = std::find(pool.begin(), pool.end(), current);
+			next          = at == pool.end() || at + 1 == pool.end() ? pool.begin() : at + 1;
+		}
+		g_current = *next;
+		save_config();
+		save_user_wall(g_current);
+		if (g_main_video && clip_is_big(g_current)) {
+			g_override.clear();
+		}
+		log("playlist %s: next wallpaper %s", pl.name.c_str(), g_current.c_str());
+		std::string error;
+		if (!apply_locked(error)) {
+			log("cycle: %s", error.c_str());
 		}
 	}
 	return nullptr;
@@ -2260,6 +2781,9 @@ int main() {
 	mirror_games();
 	start_thread(game_thread);
 	start_thread(focus_thread);
+	load_playlists();
+	start_thread(user_thread);
+	start_thread(cycle_thread);
 
 	// Re-inject after ShellUI restarts. A restart soon after an injection means our module crashed
 	// it: stop for good instead of crash-looping the console.
@@ -2324,7 +2848,6 @@ int main() {
 	const bool  onion = onion_daemon_answers() || (ui > 0 && read_pid_file(kOnionToolbox) == ui);
 	if (g_stop_requested && onion) {
 		write_text(kDimFile, "0\n");
-		write_text(kBlurFile, "0\n");
 		write_text(kLooksFile, "0 0 0 0\n");
 		write_text(kParallaxFile, "0\n");
 		write_text(kPathFile, "off\n");

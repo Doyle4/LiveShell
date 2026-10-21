@@ -30,7 +30,6 @@ struct State {
 	bool               enabled = true;
 	int                dim     = 25; // % black over the video (home screen readability)
 	int                volume  = 100; // % sound of clips that have it
-	int                blur    = 0;  // 0 off, 1 light, 2 strong
 	int                looks[4] = {0, 0, 0, 0}; // bottom fade, top fade, vignette, haze
 	std::string        ip;                      // console LAN address (remote page on phone / PC)
 	bool               shuffle    = false; // random clip on every start
@@ -40,7 +39,13 @@ struct State {
 	bool               menu_hide  = true;  // hide the video in Settings / system apps
 	bool               store_only = false; // video only on the PS Store tile
 	bool               parallax   = false; // nudge the video when moving between home tiles
+	bool               resume     = false; // Resume after a game
+	int                launchfx   = 0;
+	bool               pl_bak     = false; // playlists.bak exists: "Undo last change"
+	int                tint       = 0;     // Picture -> Colour     // game launch effect: 0 fade, 1 dive, 2 pull back
+	bool               auto_match = false; // a game tile without its own video: a note when Discover has wallpapers for it
 	bool               game_hide  = false; // no video on the home screen while a game is open
+	std::string        playlist;           // the playlist that is on ("" = none)
 	std::string        game;               // title id of the running game ("" = none)
 	std::string        current;  // real path of the chosen clip ("" = none)
 	std::string        status;   // ShellUI status line: playing / stopped / failed / starting
@@ -53,11 +58,18 @@ State              get_state();
 // the old clip (a few seconds at most). Returns false with a reason on failure.
 bool select_video(const std::string& path, std::string& error);
 bool set_enabled(bool on, std::string& error);
+void set_launchfx(int mode);
+void set_tint(int t);
+bool restore_playlists(std::string& error);            // Playlists: undo the last change (swap with playlists.bak)                                   // Picture -> Colour: 0 neutral .. 5 violet                            // game launch effect: 0 fade, 1 dive, 2 pull back
+std::string playlists_json();                           // [{"name":..,"on":..,"every":..,"shuffle":..,"videos":[paths]},..]
+bool set_playlists(const std::string& text, std::string& error); // the page's whole set (P/V lines)
+bool set_user_on(int id, bool on);                      // Users: LiveShell for this console user or not
+std::string users_json();                               // [{"id":..,"name":"..","on":true,"now":true},..]
+std::string user_avatar(int id);                        // the user's profile picture (PNG, "" = none)
 void set_dim(int percent); // 0..80
 // Bumped after the PS5 wakes from rest mode: every listening socket closes and opens again.
 int  net_epoch();
 void set_volume(int percent); // 0..100
-void set_blur(int level);  // 0 off, 1 light, 2 strong
 void set_look(const std::string& key, int level); // "bottom", "top", "vignette", "haze"; 0..2
 bool set_option(const std::string& key, bool on, std::string& error); // "shuffle", "gamepause", "menuhide", "parallax"
 bool delete_video(const std::string& path, std::string& error);

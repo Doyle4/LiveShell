@@ -581,6 +581,21 @@ Obj make_noop_action() {
 // private GetVideoPath to our clip (for our instance only) and let it handle Create/Play/loop.
 
 char g_video_path[512] = {};
+// Resume after a game (experimental): the clip that stopped and where (ms). Used once, by the same clip only.
+char     g_resume_clip[512] = {};
+uint64_t g_resume_pos       = 0;
+
+bool resume_on() {
+	FILE* f  = fopen("/system_tmp/liveshell/resume.txt", "r");
+	int   on = 0;
+	if (f != nullptr) {
+		if (fscanf(f, "%d", &on) != 1) {
+			on = 0;
+		}
+		fclose(f);
+	}
+	return on == 1;
+}
 bool g_mode_sony       = false;
 
 Obj  g_boot_class      = nullptr;
@@ -987,8 +1002,14 @@ int start_own_player() {
 	bool  load         = true;
 	void* init_args[1] = {&load};
 	invoke(mono_class_get_method_from_name(player_class, "Init", 1), player, init_args, "Init");
-	if (!invoke(mono_class_get_method_from_name(view_class, "Play", 0), view, nullptr,
-	            "VideoView.Play")) {
+	// Resume after a game: the same clip goes on where it stopped (VideoView.Play(ulong ms)); else from the start.
+	uint64_t from = resume_on() && g_resume_pos > 0 && strcmp(g_resume_clip, g_video_path) == 0 ? g_resume_pos : 0;
+	g_resume_pos  = 0; // once
+	Obj   play_at = from > 0 ? method_by_desc(view_class, ":Play(ulong)") : nullptr;
+	void* at_args[1] = {&from};
+	if (play_at != nullptr && invoke(play_at, view, at_args, "VideoView.Play(pos)")) {
+		wp_log("resume: %s from %llu ms", g_video_path, static_cast<unsigned long long>(from));
+	} else if (!invoke(mono_class_get_method_from_name(view_class, "Play", 0), view, nullptr, "VideoView.Play")) {
 		return 49;
 	}
 	assert_sound(player_class, player); // Play reset it
@@ -1197,6 +1218,7 @@ void own_player_report() {
 // so a few candidates are tried and their properties logged (the log tells the next build).
 
 std::atomic<int>  g_dim_req{-1};
+std::atomic<int>  g_tint_req{0}; // Picture -> Colour: 0 neutral (black dim), 1 warm, 2 cool, 3 rose, 4 teal, 5 violet
 std::atomic<bool> g_dim_new{false};
 Obj               g_dim_panel   = nullptr;
 Obj               g_dim_root    = nullptr;
@@ -1207,7 +1229,7 @@ const char*       g_dim_prop    = nullptr; // the colour property that worked
 bool              g_dim_tried   = false;
 int               g_dim_shown   = -1;
 float             g_black_now   = 0.0f;    // game launch: our dim panel going to black
-Obj               g_blur_target = nullptr; // widget carrying the blur effect (dim panel or video view)
+bool              g_lfx_glowing = false;   // the launch effect's light bloom owns the panel colour
 
 bool video_active();
 
@@ -1640,6 +1662,26 @@ void* black(float alpha, bool pin = true) {
 	return invoke(mono_class_get_method_from_name(g_color_class, ".ctor", 4), raw, args, "UIColor()") ? raw : nullptr;
 }
 
+// The dim layer's colour: black, or a tint (Picture -> Colour). Dimmed, the tint gets darker (a colour grade).
+void* tinted(float alpha) {
+	static const float kTint[6][3] = {{0, 0, 0}, {1.0f, 0.55f, 0.2f}, {0.25f, 0.5f, 1.0f}, {1.0f, 0.35f, 0.6f}, {0.1f, 0.85f, 0.75f}, {0.55f, 0.35f, 1.0f}};
+	const int t = g_tint_req.load();
+	if (t <= 0 || t > 5 || g_color_class == nullptr) {
+		return black(alpha);
+	}
+	const float d = alpha < 0.22f ? 0.0f : (alpha - 0.22f) / 0.78f; // how much dim on top of the tint
+	float       r = kTint[t][0] * (1.0f - 0.85f * d), g = kTint[t][1] * (1.0f - 0.85f * d), b = kTint[t][2] * (1.0f - 0.85f * d);
+	float       a = alpha;
+	Obj         boxed = mono_object_new(g_domain, g_color_class);
+	if (boxed == nullptr) {
+		return black(alpha);
+	}
+	mono_gchandle_new(boxed, 1);
+	void* raw     = mono_object_unbox(boxed);
+	void* args[4] = {&r, &g, &b, &a};
+	return invoke(mono_class_get_method_from_name(g_color_class, ".ctor", 4), raw, args, "UIColor(tint)") ? raw : black(alpha);
+}
+
 bool create_dim_panel() {
 	g_dim_tried = true;
 	Obj pui = open_image("/system_ex/common_ex/lib/Sce.PlayStation.PUI.dll");
@@ -1748,12 +1790,12 @@ void raise_dim() {
 
 // Dim only while our video plays; Sony's own wallpaper is left alone.
 void refresh_dim() {
-	if (g_black_now > 0.0f) {
-		return; // the game-launch fade owns the panel colour
+	if (g_black_now > 0.0f || g_lfx_glowing) {
+		return; // the game-launch fade (or the launch effect's light) owns the panel colour
 	}
 	int want = video_active() ? g_dim_req.load() : 0;
-	if (want == 0 && g_blur_target != nullptr && g_blur_target == g_dim_panel) {
-		want = 3; // faint tint: the blur effect needs a panel that draws something
+	if (video_active() && g_tint_req.load() != 0 && want < 22) {
+		want = 22; // a colour needs a layer that draws, even with Dim off
 	}
 	if (want < 0 || want == g_dim_shown) {
 		return;
@@ -1763,7 +1805,7 @@ void refresh_dim() {
 			return;
 		}
 	}
-	void* color = black(static_cast<float>(want) / 100.0f);
+	void* color = tinted(static_cast<float>(want) / 100.0f);
 	if (color != nullptr && property_set(g_dim_class, g_dim_panel, g_dim_prop, color)) {
 		g_dim_shown = want;
 		wp_log("dim: %d%%", want);
@@ -1895,237 +1937,6 @@ void refresh_looks() {
 	}
 }
 
-// ---- blur: a post effect on the video view ---------------------------------------------------
-// UI3.Widget has a PostEffect property; its type and the blur classes are not known yet, so the
-// first use logs them and tries: an enum value named *Blur*, or a *Blur* class instance.
-
-constexpr const char* kBlurFile = "/system_tmp/liveshell/blur.txt";
-std::atomic<int> g_blur_req{-1};
-int              g_blur_shown   = -1;
-Obj              g_blur_view    = nullptr;
-bool             g_blur_probed  = false;
-bool             g_blur_broken  = false;
-Obj              g_pe_type      = nullptr;
-bool             g_pe_enum      = false;
-Obj              g_blur_classes[8];
-int              g_blur_count   = 0;
-
-const char* type_of_getter(Obj klass, const char* prop_name) {
-	Obj prop = mono_class_get_property_from_name(klass, prop_name);
-	Obj get  = prop != nullptr ? mono_property_get_get_method(prop) : nullptr;
-	if (get == nullptr || mono_method_signature == nullptr || mono_signature_get_return_type == nullptr || mono_type_get_name == nullptr) {
-		return nullptr;
-	}
-	Obj t = mono_signature_get_return_type(mono_method_signature(get));
-	return t != nullptr ? mono_type_get_name(t) : nullptr;
-}
-
-void hook_blur_effect(Obj k);
-
-void probe_blur() {
-	g_blur_probed = true;
-	Obj pui       = open_image("/system_ex/common_ex/lib/Sce.PlayStation.PUI.dll");
-	if (pui == nullptr) {
-		return;
-	}
-	if (g_ui3_widget == nullptr) {
-		g_ui3_widget = mono_class_from_name(pui, "Sce.PlayStation.PUI.UI3", "Widget");
-	}
-	Obj prop = g_ui3_widget != nullptr ? mono_class_get_property_from_name(g_ui3_widget, "PostEffect") : nullptr;
-	Obj get  = prop != nullptr ? mono_property_get_get_method(prop) : nullptr;
-	if (get != nullptr && mono_method_signature != nullptr && mono_signature_get_return_type != nullptr) {
-		Obj         t  = mono_signature_get_return_type(mono_method_signature(get));
-		const char* tn = t != nullptr && mono_type_get_name != nullptr ? mono_type_get_name(t) : nullptr;
-		g_pe_type      = t != nullptr && mono_class_from_mono_type != nullptr ? mono_class_from_mono_type(t) : nullptr;
-		g_pe_enum      = g_pe_type != nullptr && mono_class_is_enum != nullptr && mono_class_is_enum(g_pe_type) != 0;
-		wp_log("blur: Widget.PostEffect is %s (enum %d, setter %d)", tn != nullptr ? tn : "?", g_pe_enum ? 1 : 0,
-		       has_setter(g_ui3_widget, "PostEffect") ? 1 : 0);
-		if (g_pe_type != nullptr) {
-			log_fields(g_pe_type, "PostEffect type");
-			log_properties(g_pe_type, "PostEffect type");
-			log_methods(g_pe_type, "PostEffect type");
-		}
-	} else {
-		wp_log("blur: no Widget.PostEffect getter");
-	}
-	if (mono_image_get_table_rows == nullptr) {
-		return;
-	}
-	const int rows = mono_image_get_table_rows(pui, 2);
-	char      line[1300];
-	size_t    n = 0;
-	line[0]     = 0;
-	for (int i = 2; i <= rows; ++i) {
-		Obj         k    = mono_class_get(pui, 0x02000000u | static_cast<uint32_t>(i));
-		const char* name = k != nullptr ? mono_class_get_name(k) : nullptr;
-		if (name == nullptr || name[0] == '<' || !name_has(name, {"Blur", "PostEffect", "Effect"})) {
-			continue;
-		}
-		const int w = snprintf(line + n, sizeof(line) - n, "%s ", name);
-		if (w > 0 && n + static_cast<size_t>(w) < sizeof(line)) {
-			n += static_cast<size_t>(w);
-		}
-		if (strstr(name, "Blur") != nullptr && g_blur_count < 8) {
-			g_blur_classes[g_blur_count++] = k;
-			log_properties(k, name);
-			log_methods(k, name);
-		}
-	}
-	wp_log("blur: PUI effect classes: %s", line);
-}
-
-// Blur research: does BackgroundBlurEffect ever Bind / Render, and on which widget? Pass-through
-// detours (integer-register arguments only, untouched).
-using Fx5 = void (*)(Obj self, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e);
-Fx5 g_fx_bind_orig   = nullptr;
-Fx5 g_fx_render_orig = nullptr;
-int g_fx_binds       = 0;
-long g_fx_renders    = 0;
-
-void FxBind_Hook(Obj self, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e) {
-	if (++g_fx_binds <= 40) {
-		wp_log("blurfx Bind #%d: effect %p arg %#lx%s", g_fx_binds, self, static_cast<unsigned long>(a),
-		       reinterpret_cast<Obj>(a) == g_dim_panel ? " (our dim panel)" : "");
-	}
-	g_fx_bind_orig(self, a, b, c, d, e);
-}
-
-void FxRender_Hook(Obj self, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e) {
-	++g_fx_renders;
-	if (g_fx_renders == 1 || g_fx_renders % 600 == 0) {
-		wp_log("blurfx Render calls: %ld (effect %p)", g_fx_renders, self);
-	}
-	g_fx_render_orig(self, a, b, c, d, e);
-}
-
-void hook_blur_effect(Obj k) {
-	const uintptr_t old_authid = set_ucred_to_ptrace();
-	for (int i = 0; i < 2; ++i) {
-		const char* name = i == 0 ? "Bind" : "Render";
-		Obj         m    = mono_class_get_method_from_name(k, name, -1);
-		const uint64_t addr = m != nullptr ? reinterpret_cast<uint64_t>(mono_compile_method(m)) : 0;
-		const bool ok = addr != 0 && InstallDetour(addr, reinterpret_cast<void*>(i == 0 ? &FxBind_Hook : &FxRender_Hook),
-		                                           reinterpret_cast<void**>(i == 0 ? &g_fx_bind_orig : &g_fx_render_orig));
-		wp_log("blurfx hook %s: %s", name, ok ? "installed" : "FAILED");
-	}
-	if (old_authid != 0) {
-		set_proc_authid(getpid(), old_authid);
-	}
-}
-
-// Sets a numeric property whatever its type (float / double / int).
-void set_number(Obj klass, Obj obj, const char* name, double value) {
-	const char* t = type_of_getter(klass, name);
-	if (t == nullptr || !has_setter(klass, name)) {
-		return;
-	}
-	if (strcmp(t, "System.Single") == 0) {
-		float f = static_cast<float>(value);
-		property_set(klass, obj, name, &f);
-	} else if (strcmp(t, "System.Double") == 0) {
-		double d = value;
-		property_set(klass, obj, name, &d);
-	} else if (strcmp(t, "System.Int32") == 0 || strcmp(t, "System.UInt32") == 0) {
-		int v = static_cast<int>(value);
-		property_set(klass, obj, name, &v);
-	} else {
-		return;
-	}
-	wp_log("blur: %s = %g (%s)", name, value, t);
-}
-
-// g_blur_target (declared with the dim globals): widget that carries the effect.
-
-void clear_blur(Obj target) {
-	if (target != nullptr) {
-		property_set(g_ui3_widget, target, "PostEffect", nullptr);
-	}
-}
-
-// Only UI3 effects (subclasses of UI3.PostEffect): UI2.BlurEffect threw on attach and the
-// half-attached effect crashed ShellUI ~20 s later (test 16). BackgroundBlurEffect is a "frosted
-// glass" effect: it goes on the panel IN FRONT of the video and blurs what is behind it.
-bool attach_blur(Obj view, int level) {
-	Obj fx_class = nullptr;
-	for (int i = 0; i < g_blur_count && fx_class == nullptr; ++i) {
-		Obj k = g_blur_classes[i];
-		if (mono_class_get_parent(k) == g_pe_type && strcmp(mono_class_get_name(k), "BackgroundBlurEffect") == 0) {
-			fx_class = k;
-		}
-	}
-	for (int i = 0; i < g_blur_count && fx_class == nullptr; ++i) {
-		if (mono_class_get_parent(g_blur_classes[i]) == g_pe_type) {
-			fx_class = g_blur_classes[i];
-		}
-	}
-	if (fx_class == nullptr) {
-		wp_log("blur: no UI3 blur effect class");
-		return false;
-	}
-	if (g_dim_panel == nullptr && !g_dim_tried) {
-		create_dim_panel(); // the frosted-glass layer; its colour stays whatever dim says
-	}
-	const char* fx_name = mono_class_get_name(fx_class);
-	Obj         ctor    = mono_class_get_method_from_name(fx_class, ".ctor", 0);
-	for (Obj target : {g_dim_panel, view}) {
-		if (target == nullptr) {
-			continue;
-		}
-		Obj fx = ctor != nullptr ? construct_pinned(fx_class, ctor, nullptr, fx_name) : nullptr;
-		if (fx == nullptr) {
-			wp_log("blur: %s cannot be created", fx_name);
-			return false;
-		}
-		set_number(fx_class, fx, "Radius", level >= 2 ? 24.0 : 10.0);
-		bool enabled = true;
-		if (has_setter(fx_class, "Enabled")) {
-			property_set(fx_class, fx, "Enabled", &enabled);
-		}
-		if (property_set(g_ui3_widget, target, "PostEffect", fx)) {
-			g_blur_target = target;
-			if (target == g_dim_panel && g_dim_shown <= 0) {
-				// A fully transparent panel draws nothing, so the effect had nothing to run on
-				// (test 17): give it a faint tint while blur is on.
-				void* faint = black(0.03f);
-				if (faint != nullptr && property_set(g_dim_class, g_dim_panel, g_dim_prop, faint)) {
-					g_dim_shown = 3;
-				}
-			}
-			Obj r = property_get(g_ui3_widget, target, "RenderingInPostEffect");
-			wp_log("blur: target RenderingInPostEffect=%d", r != nullptr && *static_cast<uint8_t*>(mono_object_unbox(r)) != 0 ? 1 : 0);
-			wp_log("blur: %s on the %s", fx_name, target == g_dim_panel ? "dim panel" : "video view");
-			return true;
-		}
-		clear_blur(target); // never leave a half-attached effect behind
-		wp_log("blur: %s refused by the %s, removed again", fx_name, target == g_dim_panel ? "dim panel" : "video view");
-	}
-	return false;
-}
-
-void refresh_blur() {
-	Obj       view = g_own_view != nullptr ? g_own_view : g_boot_player;
-	const int want = view != nullptr ? g_blur_req.load() : 0;
-	if (g_blur_broken || want < 0 || (want == g_blur_shown && (view == g_blur_view || g_blur_target == g_dim_panel))) {
-		return;
-	}
-	g_blur_shown = want;
-	g_blur_view  = view;
-	if (!g_blur_probed && want > 0) {
-		probe_blur();
-	}
-	clear_blur(g_blur_target);
-	g_blur_target = nullptr;
-	g_dim_shown   = -1; // refresh_dim puts the real dim colour back (the faint blur tint goes)
-	if (want == 0) {
-		wp_log("blur: off");
-		return;
-	}
-	if (view != nullptr && !attach_blur(view, want)) {
-		g_blur_broken = true;
-		wp_log("blur: nothing worked, blur unavailable this session");
-	}
-}
-
 // ---- "In menus: hide" -------------------------------------------------------------------------
 // LayerManager.s_curFocusLayer (static, enum FocusLayer { None, Game, TopMenu, ShellApp }) says
 // which layer has focus. ShellApp = Settings and the other system apps: hide our video (and the
@@ -2221,67 +2032,13 @@ void set_visible(Obj w, bool on) {
 	}
 }
 
-// How does Sony get a working glass blur? Walk ShellUI's whole widget tree (from
-// LayerManager.s_root_scene) and log every widget that has a PostEffect, with its setup.
-int g_scan_at    = -1;
-int g_scans_done = 0;
-
-void scan_widget(Obj w, int depth, int& visited, int& found, const char* path) {
-	for (; w != nullptr && visited < 8000 && found < 40; w = property_get(g_ui3_widget, w, "NextSibling")) {
-		++visited;
-		Obj         k    = mono_object_get_class(w);
-		const char* name = k != nullptr ? mono_class_get_name(k) : "?";
-		char        here[200];
-		snprintf(here, sizeof(here), "%s/%s", depth < 6 ? path : "...", name);
-		Obj fx = property_get(g_ui3_widget, w, "PostEffect");
-		if (fx != nullptr) {
-			++found;
-			Obj         fk   = mono_object_get_class(fx);
-			Obj         rip  = property_get(g_ui3_widget, w, "RenderingInPostEffect");
-			Obj         rg   = property_get(g_ui3_widget, w, "RenderGroup");
-			Obj         rk   = rg != nullptr ? mono_object_get_class(rg) : nullptr;
-			Obj         wd   = property_get(g_ui3_widget, w, "Width");
-			Obj         ht   = property_get(g_ui3_widget, w, "Height");
-			wp_log("effect #%d depth %d: %s fx=%s rendering=%d renderGroup=%s size=%gx%g", found, depth, here,
-			       fk != nullptr ? mono_class_get_name(fk) : "?", unbox_bool(rip) ? 1 : 0,
-			       rk != nullptr ? mono_class_get_name(rk) : "null",
-			       wd != nullptr ? *static_cast<float*>(mono_object_unbox(wd)) : -1.0f,
-			       ht != nullptr ? *static_cast<float*>(mono_object_unbox(ht)) : -1.0f);
-			if (fk != nullptr && found <= 3) {
-				log_properties(fk, mono_class_get_name(fk));
-			}
-		}
-		Obj child = property_get(g_ui3_widget, w, "FirstChild");
-		if (child != nullptr && depth < 60) {
-			scan_widget(child, depth + 1, visited, found, here);
-		}
-	}
-}
-
-void scan_effects() {
-	++g_scans_done;
-	Obj lm    = find_class("Sce.Vsh.ShellUI.AppSystem", "LayerManager");
-	Obj field = lm != nullptr ? mono_class_get_field_from_name(lm, "s_root_scene") : nullptr;
-	Obj vt    = lm != nullptr && mono_class_vtable != nullptr ? mono_class_vtable(g_domain, lm) : nullptr;
-	Obj scene = nullptr;
-	if (field != nullptr && vt != nullptr) {
-		mono_field_static_get_value(vt, field, &scene);
-	}
-	Obj sk   = scene != nullptr ? mono_object_get_class(scene) : nullptr;
-	Obj root = sk != nullptr ? property_get(sk, scene, "RootWidget") : nullptr;
-	wp_log("effect scan %d: root scene %p (%s), root widget %p", g_scans_done, scene, sk != nullptr ? mono_class_get_name(sk) : "?", root);
-	if (root == nullptr) {
-		return;
-	}
-	int visited = 0, found = 0;
-	scan_widget(root, 0, visited, found, "");
-	wp_log("effect scan %d: %d widgets, %d with a PostEffect", g_scans_done, visited, found);
-}
-
 // LayerManager.s_logFocusApplicationName: the focused app's name, read when focus changes.
 Obj  g_appname_field = nullptr;
 bool g_is_settings   = false;
 float g_fade         = 0.0f; // 0 = video fully shown, 1 = fully hidden
+std::atomic<int> g_lfx_req{0}; // game launch effect: 0 default (the fade), 1 cinematic, 2 soft focus
+bool  g_was_game_back = false; // the next clip that starts is the return from a game (launch transition)
+bool  g_lfx_game      = false; // our layers are fading out because a game starts (launch transition)
 
 void read_focus_app(char* out, size_t size) {
 	out[0] = 0;
@@ -2480,13 +2237,6 @@ void focus_tick() {
 		// now every system app counts; the ids below tell Settings apart for the next build.
 		g_is_settings = focus == g_shellapp_val;
 		wp_log("focus layer: %d, app '%s'", focus, app);
-		if (false) { // effect scan: research only
-			g_scan_at = g_tick + 60; // once the screen is drawn
-		}
-	}
-	if (g_scan_at >= 0 && g_tick >= g_scan_at) {
-		g_scan_at = -1;
-		scan_effects();
 	}
 	if (g_ids_at >= 0 && g_tick >= g_ids_at) {
 		g_ids_at = -1;
@@ -2572,7 +2322,8 @@ void focus_tick() {
 		g_self_started = false;
 		g_was_game     = true;
 	} else if (g_was_game) {
-		g_was_game = false;
+		g_was_game      = false;
+		g_was_game_back = true; // the clip that comes back settles in (launch transition)
 		// "Hide while a game is open" holds the video back: no video is coming, so no black hold either -
 		// the game's art shows at once (user: it stayed black until moving around).
 		if (view == nullptr && !game_open_hold() && !uhd_blocked(g_video_path)) {
@@ -2679,9 +2430,11 @@ void focus_tick() {
 		}
 		g_dim_shown = to_black > 0.0f ? -2 : -1; // refresh_dim puts the real dim back afterwards
 	}
+	g_lfx_game = hide && game;
 	if (hide) {
 		if (game) {
-			g_fade = g_fade + 1.0f / 72.0f > 1.0f ? 1.0f : g_fade + 1.0f / 72.0f; // ~1.2 s, at once
+			const float step = g_lfx_req.load() != 0 ? 1.0f / 90.0f : 1.0f / 72.0f; // ~1.5 s with an effect, ~1.2 s
+			g_fade = g_fade + step > 1.0f ? 1.0f : g_fade + step;
 		} else if (g_tile_hide) {
 			g_fade = g_fade + 1.0f / 15.0f > 1.0f ? 1.0f : g_fade + 1.0f / 15.0f; // ~0.25 s, at once
 		} else if (g_tick - g_hide_changed >= 9) {
@@ -2704,7 +2457,12 @@ void focus_tick() {
 	// Going out: ease-in-out (slow start, slow end). Coming back home: ease-out, i.e. our layers
 	// cover Sony's background almost at once and then settle (test 26).
 	float next;
-	if (hide) {
+	if (hide && g_lfx_game && g_lfx_req.load() != 0) {
+		// a launch effect: the picture stays while the push / defocus builds up, then fades (from 40%)
+		float q = (g_fade - 0.4f) / 0.6f;
+		q       = q < 0.0f ? 0.0f : (q > 1.0f ? 1.0f : q);
+		next    = 1.0f - q * q * (3.0f - 2.0f * q);
+	} else if (hide) {
 		const float eased = g_fade < 0.5f ? 4.0f * g_fade * g_fade * g_fade
 		                                  : 1.0f - (-2.0f * g_fade + 2.0f) * (-2.0f * g_fade + 2.0f) * (-2.0f * g_fade + 2.0f) / 2.0f;
 		next = 1.0f - eased;
@@ -2782,6 +2540,118 @@ void place_view(Obj view, bool parallax, float shift) {
 	property_set(g_ui3_widget, view, "Y", &y);
 	property_set(g_ui3_widget, view, "Width", &w);
 	property_set(g_ui3_widget, view, "Height", &h);
+}
+
+// ---- game-launch transition --------------------------------------------------------------------
+float g_lfx_scale  = 1.0f;       // what the view is sized to now
+float g_lfx_back   = 1.0f;       // back from a game: 0 -> 1 while the wallpaper settles in
+Obj   g_lfx_view   = nullptr;
+
+// The video's box: scale sx / sy around the point (ax, ay) of the screen (0..1), then moved by dx / dy pixels.
+// Scale 1 + no move = parallax's own placement.
+void lfx_place(Obj view, float sx, float sy, float ax, float ay, float dx, float dy) {
+	const float bw = g_px_on == 1 ? 1920.0f + 2 * kOverX : 1920.0f, bh = g_px_on == 1 ? 1080.0f + 2 * kOverY : 1080.0f;
+	const float bx = g_px_on == 1 ? -kOverX + g_px : 0.0f, by = g_px_on == 1 ? -kOverY : 0.0f;
+	const float px = 1920.0f * ax, py = 1080.0f * ay;
+	float w = bw * sx, h = bh * sy, x = px + (bx - px) * sx + dx, y = py + (by - py) * sy + dy;
+	if (w < 2.0f) {
+		w = 2.0f;
+	}
+	if (h < 2.0f) {
+		h = 2.0f;
+	}
+	property_set(g_ui3_widget, view, "X", &x);
+	property_set(g_ui3_widget, view, "Y", &y);
+	property_set(g_ui3_widget, view, "Width", &w);
+	property_set(g_ui3_widget, view, "Height", &h);
+}
+
+// One frame of an effect. out: leaving for a game, k = g_fade 0 -> 1. back: k = 1 -> 0 while it settles in.
+// s = scale around the centre, glow = white light over the picture (0..1).
+struct Lfx {
+	float s = 1.0f, glow = 0.0f;
+};
+Lfx lfx_frame(int mode, float k, bool out) {
+	Lfx         f;
+	const float e = k * k * (3.0f - 2.0f * k); // smoothstep: soft start, soft end
+	if (!out) {                                 // coming back: settle from a touch closer
+		f.s = mode == 1 ? 1.0f + 0.035f * k : 1.0f; // Cinematic settles back in
+		return f;
+	}
+	switch (mode) {
+	case 1: // Cinematic: a slow push-in, then (focus_tick) the fade
+		f.s = 1.0f + 0.08f * e;
+		break;
+	case 2: // Slow fade: the picture holds, then (focus_tick) fades slowly
+		break;
+	default:
+		break;
+	}
+	return f;
+}
+
+float g_lfx_sig  = 0.0f;
+
+void* white(float alpha) {
+	float r = 1.0f, g = 1.0f, b = 1.0f;
+	Obj   boxed = g_color_class != nullptr ? mono_object_new(g_domain, g_color_class) : nullptr;
+	if (boxed == nullptr) {
+		return nullptr;
+	}
+	void* raw     = mono_object_unbox(boxed);
+	void* args[4] = {&r, &g, &b, &alpha};
+	return invoke(mono_class_get_method_from_name(g_color_class, ".ctor", 4), raw, args, "UIColor()") ? raw : nullptr;
+}
+
+void launchfx_tick() {
+	Obj       view = g_own_view != nullptr ? g_own_view : g_boot_player;
+	const int mode = g_lfx_req.load();
+	if (view == nullptr || g_ui3_widget == nullptr) {
+		g_lfx_view = nullptr;
+		return;
+	}
+	if (view != g_lfx_view) { // a new clip: back from a game it settles in, otherwise nothing
+		g_lfx_view  = view;
+		g_lfx_sig   = 0.0f;
+		g_lfx_back  = g_was_game_back && mode != 0 ? 0.0f : 1.0f;
+		g_was_game_back = false;
+	}
+	Lfx  f;
+	bool active = false;
+	if (mode != 0 && g_lfx_game) {
+		f      = lfx_frame(mode, g_fade, true);
+		active = true;
+	} else if (g_lfx_back < 1.0f) {
+		g_lfx_back += 1.0f / 54.0f; // ~0.9 s
+		if (g_lfx_back > 1.0f) {
+			g_lfx_back = 1.0f;
+		}
+		const float o = 1.0f - (1.0f - g_lfx_back) * (1.0f - g_lfx_back) * (1.0f - g_lfx_back); // ease-out
+		f      = lfx_frame(mode, 1.0f - o, false);
+		active = true;
+	}
+	const float sig = active ? 1.0f + f.s * 13.0f + f.glow * 5.0f : 0.0f;
+	if (sig == g_lfx_sig) {
+		return;
+	}
+	g_lfx_sig = sig;
+	if (!active || f.s == 1.0f) {
+		place_view(view, g_px_on == 1, g_px_on == 1 ? g_px : 0.0f); // parallax's own placement
+	} else {
+		lfx_place(view, f.s, f.s, 0.5f, 0.5f, 0.0f, 0.0f);
+	}
+	(void)active;
+	if (active && f.glow > 0.004f && g_dim_panel != nullptr && g_dim_class != nullptr && g_dim_prop != nullptr) {
+		void* c = white(f.glow);
+		if (c != nullptr) {
+			property_set(g_dim_class, g_dim_panel, g_dim_prop, c);
+			g_lfx_glowing = true; // refresh_dim keeps its hands off meanwhile
+			g_dim_shown   = -2;
+		}
+	} else if (g_lfx_glowing) {
+		g_lfx_glowing = false;
+		g_dim_shown   = -1; // refresh_dim puts the real dim colour back
+	}
 }
 
 void parallax_tick() {
@@ -3094,6 +2964,20 @@ void stop_video() {
 		Obj view   = g_own_view;
 		g_own_view = nullptr; // own_player_report stops touching it from now on
 		g_own_player = nullptr;
+		// Resume after a game: where this clip was (not near its end - the loop starts over anyway)
+		g_resume_pos = 0;
+		if (resume_on() && g_videoview_class != nullptr) {
+			Obj p = property_get(g_videoview_class, view, "Position");
+			Obj d = property_get(g_videoview_class, view, "Duration");
+			const uint64_t pos = p != nullptr ? *static_cast<uint64_t*>(mono_object_unbox(p)) : 0;
+			const uint64_t dur = d != nullptr ? *static_cast<uint64_t*>(mono_object_unbox(d)) : 0;
+			if (pos > 1000 && (dur == 0 || pos + 1500 < dur)) {
+				g_resume_pos = pos;
+				snprintf(g_resume_clip, sizeof(g_resume_clip), "%s", g_video_path);
+				wp_log("resume: %s stopped at %llu of %llu ms", g_video_path, static_cast<unsigned long long>(pos),
+				       static_cast<unsigned long long>(dur));
+			}
+		}
 		Obj stop    = find_method_up(g_videoview_class, "Stop", 0);
 		Obj dispose = find_method_up(g_videoview_class, "Dispose", 0);
 		wp_log("stop: own view, Stop %p Dispose %p", stop, dispose);
@@ -3381,11 +3265,11 @@ void Update_Hook(Obj self) {
 		stall_tick();
 		sound_tick();
 		refresh_dim();
-		refresh_blur();
 		refresh_looks();
 		if (true) { // every frame: the menu fade needs it (just a static field read)
 			focus_tick();
 			parallax_tick();
+			launchfx_tick();
 		}
 	}
 
@@ -3504,6 +3388,23 @@ void* wallpaper_thread(void*) {
 			}
 			fclose(f);
 		}
+		if (FILE* f = fopen("/system_tmp/liveshell/tint.txt", "r")) {
+			int tn = 0;
+			if (fscanf(f, "%d", &tn) == 1 && tn >= 0 && tn <= 5 && tn != g_tint_req.load()) {
+				g_tint_req.store(tn);
+				g_dim_shown = -1; // refresh_dim paints the new colour
+				wp_log("colour: %d", tn);
+			}
+			fclose(f);
+		}
+		if (FILE* f = fopen("/system_tmp/liveshell/launchfx.txt", "r")) {
+			int lf = 0;
+			if (fscanf(f, "%d", &lf) == 1 && lf >= 0 && lf <= 2 && lf != g_lfx_req.load()) {
+				g_lfx_req.store(lf);
+				wp_log("launch effect: %d", lf);
+			}
+			fclose(f);
+		}
 		if (FILE* f = fopen(kParallaxFile, "r")) {
 			int px = 0;
 			if (fscanf(f, "%d", &px) == 1 && (px == 0 || px == 1) && px != g_parallax_req.load()) {
@@ -3521,14 +3422,6 @@ void* wallpaper_thread(void*) {
 						wp_log("look request: %d -> %d", l, v[l]);
 					}
 				}
-			}
-			fclose(f);
-		}
-		if (FILE* f = fopen(kBlurFile, "r")) {
-			int blur = -1;
-			if (fscanf(f, "%d", &blur) == 1 && blur >= 0 && blur <= 2 && blur != g_blur_req.load()) {
-				g_blur_req.store(blur);
-				wp_log("blur request: %d", blur);
 			}
 			fclose(f);
 		}

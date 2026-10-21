@@ -87,7 +87,7 @@ std::string json_str(const std::string& s) {
 std::string state_json() {
 	const State st = get_state();
 	std::string j  = std::string("{\"enabled\":") + (st.enabled ? "true" : "false") + ",\"dim\":" + std::to_string(st.dim) + ",\"volume\":" + std::to_string(st.volume) +
-	                ",\"blur\":" + std::to_string(st.blur) + ",\"looks\":[" + std::to_string(st.looks[0]) + "," + std::to_string(st.looks[1]) + "," + std::to_string(st.looks[2]) + "," + std::to_string(st.looks[3]) + "]" + ",\"shuffle\":" + (st.shuffle ? "true" : "false") + ",\"mainvideo\":" + (st.main_video ? "true" : "false") + ",\"gamevideos\":" + (st.game_videos ? "true" : "false") + ",\"gamepause\":" + (st.game_pause ? "true" : "false") + ",\"menuhide\":" + (st.menu_hide ? "true" : "false") + ",\"storeonly\":" + (st.store_only ? "true" : "false") + ",\"parallax\":" + (st.parallax ? "true" : "false") + ",\"gamehide\":" + (st.game_hide ? "true" : "false") +
+	                ",\"looks\":[" + std::to_string(st.looks[0]) + "," + std::to_string(st.looks[1]) + "," + std::to_string(st.looks[2]) + "," + std::to_string(st.looks[3]) + "]" + ",\"shuffle\":" + (st.shuffle ? "true" : "false") + ",\"mainvideo\":" + (st.main_video ? "true" : "false") + ",\"gamevideos\":" + (st.game_videos ? "true" : "false") + ",\"gamepause\":" + (st.game_pause ? "true" : "false") + ",\"menuhide\":" + (st.menu_hide ? "true" : "false") + ",\"storeonly\":" + (st.store_only ? "true" : "false") + ",\"parallax\":" + (st.parallax ? "true" : "false") + ",\"automatch\":" + (st.auto_match ? "true" : "false") + ",\"resume\":" + (st.resume ? "true" : "false") + ",\"launchfx\":" + std::to_string(st.launchfx) + ",\"plbak\":" + (st.pl_bak ? "true" : "false") + ",\"tint\":" + std::to_string(st.tint) + ",\"playlist\":" + json_str(st.playlist) + ",\"users\":" + users_json() + ",\"gamehide\":" + (st.game_hide ? "true" : "false") +
 	                ",\"ip\":" + json_str(st.ip) + ",\"port\":" + std::to_string(kWebPort) + ",\"games\":" + json_str(games_text()) + ",\"game\":" + json_str(st.game) + ",\"status\":" + json_str(st.status) + ",\"current\":" + json_str(st.current) + ",\"main4k\":" + (st.main_video && clip_is_big(st.current) ? "true" : "false") + ",\"videos\":[";
 	const std::vector<std::string> fav = favorites();
 	for (size_t i = 0; i < st.videos.size(); ++i) {
@@ -581,6 +581,21 @@ void handle(int fd) {
 			save_upload(fd, query, headers, body, have);
 		} else if (path == "/thumb") {
 			save_thumb(fd, index_arg(query), headers, body, have);
+		} else if (path == "/api/playlists") { // the page's whole set of playlists (P/V lines)
+			const char* cl   = strcasestr(headers, "\nContent-Length:");
+			const long  size = cl != nullptr ? strtol(cl + 16, nullptr, 10) : 0;
+			std::string data(body, have < static_cast<size_t>(std::max(0L, size)) ? have : static_cast<size_t>(std::max(0L, size)));
+			char        chunk[16 * 1024];
+			while (size > 0 && size <= 2 * 1024 * 1024 && data.size() < static_cast<size_t>(size)) {
+				const ssize_t got = recv(fd, chunk, sizeof(chunk), 0);
+				if (got <= 0) {
+					break;
+				}
+				data.append(chunk, static_cast<size_t>(got));
+			}
+			const bool ok = size > 0 && size <= 2 * 1024 * 1024 && data.size() >= static_cast<size_t>(size) &&
+			                set_playlists(data.substr(0, static_cast<size_t>(size)), error);
+			reply_json(fd, result_json(ok, error.empty() ? "The playlists did not arrive" : error));
 		} else {
 			reply_404(fd);
 		}
@@ -651,6 +666,31 @@ void handle(int fd) {
 		const size_t pos = query.find("v=");
 		set_dim(pos == std::string::npos ? 25 : atoi(query.c_str() + pos + 2));
 		reply_json(fd, result_json(true, error));
+	} else if (path == "/api/playlists") {
+		reply_json(fd, playlists_json());
+	} else if (path == "/api/playlists/restore") {
+		const bool ok = restore_playlists(error);
+		reply_json(fd, result_json(ok, error));
+	} else if (path == "/useravatar") { // ?id=<user id>: the PS5 profile picture
+		const size_t      id  = query.find("id=");
+		const std::string png = id == std::string::npos ? std::string() : user_avatar(atoi(query.c_str() + id + 3));
+		if (png.empty()) {
+			reply_404(fd);
+		} else {
+			reply(fd, "200 OK", "image/png", png.data(), png.size(), true);
+		}
+	} else if (path == "/api/user") { // ?id=<user id>&on=0|1
+		const size_t id = query.find("id="), on = query.find("on=");
+		const bool   ok = id != std::string::npos && set_user_on(atoi(query.c_str() + id + 3), on != std::string::npos && query[on + 3] == '1');
+		reply_json(fd, result_json(ok, error));
+	} else if (path == "/api/tint") { // ?v=0..5
+		const size_t v = query.find("v=");
+		set_tint(v == std::string::npos ? 0 : atoi(query.c_str() + v + 2));
+		reply_json(fd, result_json(true, error));
+	} else if (path == "/api/launchfx") { // ?m=0|1|2
+		const size_t m = query.find("m=");
+		set_launchfx(m == std::string::npos ? 0 : atoi(query.c_str() + m + 2));
+		reply_json(fd, result_json(true, error));
 	} else if (path == "/api/volume") {
 		const size_t pos = query.find("v=");
 		set_volume(pos == std::string::npos ? 100 : atoi(query.c_str() + pos + 2));
@@ -717,10 +757,6 @@ void handle(int fd) {
 			set_game_background(tid, i < 0 ? std::string() : v.path);
 		}
 		reply_json(fd, result_json(ok && !big, err));
-	} else if (path == "/api/blur") {
-		const size_t pos = query.find("v=");
-		set_blur(pos == std::string::npos ? 0 : atoi(query.c_str() + pos + 2));
-		reply_json(fd, result_json(true, error));
 	} else if (path == "/api/set") {
 		// /api/set?k=shuffle&v=1
 		const size_t k = query.find("k="), v = query.find("v=");
